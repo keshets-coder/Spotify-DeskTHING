@@ -39,8 +39,8 @@ It controls whatever device Spotify is already playing on (your phone, computer 
 
 | Encoder pin | Board pin |
 |---|---|
-| CLK (A) | IO14 |
-| DT (B) | IO21 |
+| CLK (A) | IO15 |
+| DT (B) | IO16 |
 | + | 3.3V |
 | GND | GND |
 
