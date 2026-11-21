@@ -4,7 +4,7 @@ dependencies:
   espressif/mdns: "^1.8.2"
   lovyangfx:
     git: https://github.com/lovyan03/LovyanGFX.git
-    version: "1.3.0"
+    version: "1.2.36"
   arduinojson:
     git: https://github.com/bblanchon/ArduinoJson.git
     version: "v7.4.2"
