@@ -242,8 +242,7 @@ bool HTTPClient::Response::rawRequest(const std::string& url,
   urlParser = bell::URLParser::parse(url);
 
   const char* reqEnd = "\r\n";
-  const int kMaxAttempts = 2;
-  uint8_t attempts = kMaxAttempts;
+  uint8_t attempts = maxAttempts > 0 ? maxAttempts : 1;
   do {
     responseHeaders.clear();
     rawBody.clear();

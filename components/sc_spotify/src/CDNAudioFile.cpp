@@ -189,7 +189,12 @@ std::unique_ptr<bell::HTTPClient::Response> CDNAudioFile::getAny(
   std::unique_ptr<bell::HTTPClient::Response> r;
   for (size_t n = 0; n < urls.size() * 2; n++) {
     const std::string& url = urls[(urlIndex_ + n) % urls.size()];
-    r = bell::HTTPClient::get(url, headers, false);
+    // one try per URL: when a CDN host ignores a request, the other URL
+    // usually answers at once
+    r = std::make_unique<bell::HTTPClient::Response>();
+    r->maxAttempts = 1;
+    r->connect(url);
+    r->get(url, headers, false);
     if (r && r->stream().isOpen() && r->status() >= 200 && r->status() < 300) {
       urlIndex_ = (urlIndex_ + n) % urls.size();
       if (n)

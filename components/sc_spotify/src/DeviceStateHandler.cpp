@@ -1713,9 +1713,8 @@ void DeviceStateHandler::refreshQueueSnapshot(bool tryOnly) {
       // preloaded tracks already carry the full metadata
       for (size_t k = 1; k < trackQueue->preloadedTracks.size(); k++) {
         auto& pt = trackQueue->preloadedTracks[k];
-        // QueuedTrack::ref is a shallow copy -> compare the pointers (the
-        // strings of stale entries may already be freed)
-        if (!pt || pt->ref.uri != ct.uri)
+        // QueuedTrack keeps its own copy of the URI
+        if (!pt || !ct.uri || !pt->ref.uri || strcmp(pt->ref.uri, ct.uri) != 0)
           continue;
         if (pt->state >= QueuedTrack::State::KEY_REQUIRED &&
             pt->state != QueuedTrack::State::FAILED) {

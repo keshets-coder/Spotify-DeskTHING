@@ -1,3 +1,4 @@
+#include "esp_timer.h"
 #include "TrackQueue.h"
 #include <pb_decode.h>
 
@@ -135,9 +136,15 @@ QueuedTrack::QueuedTrack(
   trackMetrics = std::make_shared<TrackMetrics>(ctx, requestedPosition);
   this->playableSemaphore = playableSemaphore;
   this->ref = ref;
+  uriStr_ = ref.uri ? ref.uri : "";
+  uidStr_ = ref.uid ? ref.uid : "";
+  providerStr_ = ref.provider ? ref.provider : "";
+  this->ref.uri = ref.uri ? uriStr_.data() : nullptr;
+  this->ref.uid = ref.uid ? uidStr_.data() : nullptr;
+  this->ref.provider = ref.provider ? providerStr_.data() : nullptr;
   this->audioFormat = ctx->config.audioFormat;
-  this->trackInfo.provider = ref.provider;
-  for (int i = 0; ref.metadata && i < ref.full_metadata_count; i++) {
+  this->trackInfo.provider = providerStr_;
+  for (int i = 0; ref.metadata && i < ref.metadata_count; i++) {
     if (!ref.metadata[i].key || !ref.metadata[i].value)
       continue;
     if (strcmp(ref.metadata[i].key, "page_instance_id") == 0) {
@@ -148,6 +155,10 @@ QueuedTrack::QueuedTrack(
       this->trackInfo.decision_id = ref.metadata[i].value;
     }
   }
+  // the metadata strings belong to the tracklist too: not kept
+  this->ref.metadata = nullptr;
+  this->ref.metadata_count = 0;
+  this->ref.full_metadata_count = 0;
   // Desk Thing: a track reference without a URI (e.g. from a failed
   // autoplay lookup) can't be played; treat it like a delimiter.
   if (ref.uri && ref.uri[0] && !strstr(ref.uri, "spotify:delimiter")) {
@@ -280,6 +291,7 @@ void QueuedTrack::stepLoadAudioFile(
     std::mutex& trackListMutex,
     std::shared_ptr<bell::WrappedSemaphore> updateSemaphore) {
   // Request audio key
+  keyRequestedAtMs = esp_timer_get_time() / 1000;
   this->pendingAudioKeyRequest = ctx->session->requestAudioKey(
       trackId, fileId,
       [this, &trackListMutex, updateSemaphore](
@@ -295,6 +307,12 @@ void QueuedTrack::stepLoadAudioFile(
         } else {
           SC32_LOG(error, "Failed to get audio key");
           retries++;
+          // Spotify refuses keys asked for in a burst: ask again later
+          // (the queue task checks keyRetryAtMs; never sleep here, this runs
+          // in the Mercury packet handler)
+          keyRetryAtMs = esp_timer_get_time() / 1000 +
+                         std::min<int64_t>(700 * retries, 3000);
+          updateSemaphore->give();
           state = State::KEY_REQUIRED;
           if (retries > 10) {
             if (audioFormat > AudioFormat_OGG_VORBIS_96) {
@@ -441,9 +459,9 @@ void TrackQueue::runTask() {
   std::deque<std::shared_ptr<QueuedTrack>> trackQueue;
 
   while (isRunning) {
-    if (processSemaphore->twait(200)) {
-      continue;
-    }
+    // Desk Thing: also look at the queue on a timeout, so key retries that
+    // are backing off get picked up when their time comes
+    processSemaphore->twait(200);
 
     // Make sure we have the newest access key
     accessKey = accessKeyFetcher->getAccessKey();
@@ -500,7 +518,17 @@ bool TrackQueue::processTrack(std::shared_ptr<QueuedTrack> track) {
       track->stepLoadMetadata(&track->pbTrack, &track->pbEpisode, tracksMutex,
                               processSemaphore);
       break;
+    // Desk Thing: one audio key request at a time, in queue order, with a
+    // pause after a refusal, so fast skips don't trigger refused bursts.
+    case QueuedTrack::State::PENDING_KEY:
+      if (esp_timer_get_time() / 1000 - track->keyRequestedAtMs > 6000) {
+        SC32_LOG(error, "Audio key request timed out, asking again");
+        track->state = QueuedTrack::State::KEY_REQUIRED;
+      }
+      return true;  // wait for this key before asking for the next one
     case QueuedTrack::State::KEY_REQUIRED:
+      if (esp_timer_get_time() / 1000 < track->keyRetryAtMs)
+        return true;  // backing off; keep later tracks waiting too
       track->stepLoadAudioFile(tracksMutex, processSemaphore);
       break;
     case QueuedTrack::State::CDN_REQUIRED:

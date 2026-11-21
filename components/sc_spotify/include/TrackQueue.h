@@ -62,6 +62,9 @@ class QueuedTrack {
   AudioFormat audioFormat;
   bool loading = false;
   uint8_t retries = 0;
+  // Desk Thing: audio key pacing (ms since boot)
+  int64_t keyRetryAtMs = 0;
+  int64_t keyRequestedAtMs = 0;
 
   // PB data
   Track pbTrack = Track_init_zero;
@@ -94,6 +97,9 @@ class QueuedTrack {
 
   uint64_t pendingMercuryRequest = 0;
   uint32_t pendingAudioKeyRequest = 0;
+  // own copies of ref's strings: the tracklist that ref points into can be
+  // freed while this track is still queued
+  std::string uriStr_, uidStr_, providerStr_;
 
   std::vector<uint8_t> trackId, fileId, audioKey;
   std::string cdnUrl;

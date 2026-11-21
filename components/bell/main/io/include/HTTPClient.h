@@ -89,6 +89,7 @@ class HTTPClient {
         : phResponseHeaders(new phr_header[numHeaders]),
           maxHeaders(numHeaders) {}
     ~Response();
+    int maxAttempts = 2;  // tries per request (each on a fresh connection)
 
     /**
     * Initializes a connection with a given url.
@@ -133,6 +134,7 @@ class HTTPClient {
     Headers responseHeaders;
     phr_header* phResponseHeaders;
     size_t maxHeaders;  // Store max headers to handle numHeaders limit
+
     const size_t HTTP_BUF_SIZE = 4096;
 
     std::vector<uint8_t> httpBuffer = std::vector<uint8_t>(HTTP_BUF_SIZE);
