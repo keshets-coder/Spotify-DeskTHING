@@ -262,6 +262,22 @@ bool active() { return g_spotify && g_spotify->isActive(); }
 
 const char* name() { return g_name.c_str(); }
 
+void setVolume(int percent) {
+  if (!g_spotify)
+    return;
+  if (percent < 0) percent = 0;
+  if (percent > 100) percent = 100;
+  g_spotify->setLocalVolume((uint16_t)((uint32_t)percent * 65535 / 100));
+}
+
+void setVolumeAndReport(int percent) {
+  if (!g_spotify)
+    return;
+  if (percent < 0) percent = 0;
+  if (percent > 100) percent = 100;
+  g_spotify->setVolume((uint8_t)percent);
+}
+
 void forgetLogin() {
   NvsLoginStore("spk_login").erase("");
 }

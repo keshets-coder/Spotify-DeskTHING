@@ -112,6 +112,14 @@ class SpotifyStream : public StreamBase {
     onStartup();
   }
 
+  // Desk Thing: set the speaker's volume right away (0..65535, like Spotify),
+  // without waiting for the round trip through Spotify's servers.
+  void setLocalVolume(uint16_t value) {
+    volumePercent_.store((uint8_t)(((uint32_t)value * 100) / 65535));
+    this->feed_->feedCommand(AudioControl::CommandType::VOLUME_LOGARITHMIC,
+                             value);
+  }
+
   void onLoginSuccess(std::shared_ptr<spotify::LoginBlob> blob) {
     Record r;
     r.userkey = blob->username;

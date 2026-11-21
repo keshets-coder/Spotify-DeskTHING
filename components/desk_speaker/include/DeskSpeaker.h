@@ -34,6 +34,11 @@ bool connected();
 bool active();
 const char* name();
 
+/** Sets the speaker's volume (0-100 %) right away, for local controls.
+ *  Only changes the sound; doesn't block. */
+void setVolume(int percent);
+/** Sets the volume and tells Spotify (a network call, may block briefly). */
+void setVolumeAndReport(int percent);
 /** Forgets the saved Spotify login of the speaker (used on log out). */
 void forgetLogin();
 

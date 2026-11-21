@@ -1215,6 +1215,15 @@ void sendVolumeIfDue() {
   LOCK();
   holdVolUntil = now + 2500;
   UNLOCK();
+#if DESK_SPEAKER
+  // Playing here: report the volume over the speaker's own Spotify
+  // connection instead of a Web API round trip.
+  if (desk_speaker::active()) {
+    desk_speaker::setVolumeAndReport(v);
+    Serial.printf("[vol] speaker set %d\n", v);
+    return;
+  }
+#endif
   int code = api("PUT", "/me/player/volume?volume_percent=" + String(v));
   Serial.printf("[vol] set %d -> %d\n", v, code);
   if (code == 404) setToast("Nothing is playing right now");
@@ -2177,6 +2186,10 @@ void bumpVolume(int dir) {
   volTarget = nv;
   volChangedAt = now;
   volDirty = true;
+#if DESK_SPEAKER
+  // Playing here: change the speaker now, Spotify is told right after.
+  if (desk_speaker::active()) desk_speaker::setVolume(nv);
+#endif
   Serial.printf("[enc] %s -> vol %d (step %d)\n", dir > 0 ? "up" : "down", nv, step);
 }
 

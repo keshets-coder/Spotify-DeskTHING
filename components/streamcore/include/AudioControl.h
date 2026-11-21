@@ -112,9 +112,9 @@ class AudioControl {
         case CommandType::VOLUME_LOGARITHMIC: {
           this->audioController->volume.store(
               this->audioSink->to_logarithmic_volume(value));
-          this->audioSink->feed_command([this](uint8_t) {
-            this->audioSink->set_volume(this->audioController->volume.load());
-          });
+          // Desk Thing: the ES8311 sink's gain is atomic, so apply it now
+          // instead of waiting for the decoder's next read.
+          this->audioSink->set_volume(this->audioController->volume.load());
         } break;
 
         default:
