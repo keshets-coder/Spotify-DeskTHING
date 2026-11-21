@@ -40,6 +40,8 @@ CONFIG_ARDUINO_SELECTIVE_BluetoothSerial=n
 CONFIG_ARDUINO_SELECTIVE_SimpleBLE=n
 CONFIG_ARDUINO_SELECTIVE_WiFiProv=n
 CONFIG_ARDUINO_SELECTIVE_ESP_NOW=n
+# esp_diagnostics (pulled in by arduino-esp32) wraps esp_log_write
+CONFIG_DIAG_USE_EXTERNAL_LOG_WRAP=y
 
 # PSRAM (8 MB octal). Big buffers, TLS and Wi-Fi go to PSRAM to keep internal RAM free.
 CONFIG_SPIRAM=y
