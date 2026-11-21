@@ -305,8 +305,19 @@ void QueuedTrack::stepLoadAudioFile(
           state = State::CDN_REQUIRED;
           updateSemaphore->give();
         } else {
-          SC32_LOG(error, "Failed to get audio key");
           retries++;
+          {
+            // reply: [4-byte seq][2-byte error code]
+            unsigned code = audioKey.size() >= 6
+                                ? (unsigned)((audioKey[4] << 8) | audioKey[5])
+                                : 0xFFFF;
+            int64_t waited = esp_timer_get_time() / 1000 - keyRequestedAtMs;
+            SC32_LOG(error,
+                     "Failed to get audio key: code 0x%04x, try %d, %lld ms, "
+                     "track %s file %s",
+                     code, (int)retries, (long long)waited,
+                     bytesToHexString(trackId).c_str(), identifier.c_str());
+          }
           // Spotify refuses keys asked for in a burst: ask again later
           // (the queue task checks keyRetryAtMs; never sleep here, this runs
           // in the Mercury packet handler)

@@ -611,6 +611,45 @@ bool exchangeCode(const String& code) {
 
 // ---------------------------------------------------------------- api
 
+// Reads a reply body of known length ourselves. HTTPClient::getString()
+// throws the whole body away when the TLS read stalls part-way through a big
+// reply (70+ KB), so read patiently and keep going while data arrives.
+String readBody(HTTPClient& h, int size) {
+  String out;
+  if (!out.reserve(size)) {
+    Serial.printf("[api] no memory for a %d byte reply\n", size);
+    return out;
+  }
+  NetworkClient* s = h.getStreamPtr();
+  if (!s) return out;
+  static char buf[2048];
+  int got = 0;
+  uint32_t t0 = millis(), last = t0;
+  while (got < size) {
+    int av = s->available();
+    if (av > 0) {
+      int n = s->read((uint8_t*)buf, min(av, min((int)sizeof(buf), size - got)));
+      if (n > 0) {
+        out.concat(buf, n);
+        got += n;
+        last = millis();
+        continue;
+      }
+    }
+    if (!s->connected() && s->available() <= 0) break;
+    if (millis() - last > 8000) break;
+    delay(2);
+  }
+  if (got < size) {
+    Serial.printf("[api] reply cut short: %d of %d bytes in %lums (%s)\n", got, size, (unsigned long)(millis() - t0),
+                  s->connected() ? "stalled" : "closed");
+    s->stop();
+    return String();
+  }
+  if (millis() - t0 > 1500) Serial.printf("[api] %d byte reply took %lums\n", size, (unsigned long)(millis() - t0));
+  return out;
+}
+
 int api(const char* method, const String& path, const String& body = "", String* out = nullptr) {
   if ((int32_t)(rateLimitedUntil - millis()) > 0) return 429;
   if (!ensureToken()) return -1;
@@ -630,7 +669,7 @@ int api(const char* method, const String& path, const String& body = "", String*
     int size = code > 0 ? apiHttp.getSize() : 0;
     bool noBody = code == 204 || code == 304 || ((code == 202 || !isGet) && size <= 0);
     if (code > 0 && !noBody) {
-      resp = apiHttp.getString();
+      resp = size > 0 ? readBody(apiHttp, size) : apiHttp.getString();
       if (resp.length() == 0 && size != 0)
         Serial.printf("[api] %s %s: reply body lost (size %d, free psram %u, internal %u)\n", method, path.c_str(), size,
                       (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
@@ -1096,7 +1135,7 @@ void loadRecent() {
   needRecent = false;
   recentState = RS_LOADING;
   String body;
-  int code = api("GET", "/me/player/recently-played?limit=50", "", &body);
+  int code = api("GET", "/me/player/recently-played?limit=30", "", &body);
   Serial.printf("[recent] -> %d\n", code);
   if (code == 401 || code == 403) { recentState = RS_SCOPE; recentAt = millis(); return; }
   if (code != 200) { recentState = RS_ERROR; recentAt = millis(); return; }
@@ -1111,7 +1150,7 @@ void loadRecent() {
   al["images"][0]["width"] = true;
   al["artists"][0]["name"] = true;
   JsonDocument doc(&spiAlloc);
-  if (deserializeJson(doc, body, DeserializationOption::Filter(filter))) { recentState = RS_ERROR; return; }
+  if (deserializeJson(doc, body, DeserializationOption::Filter(filter))) { recentState = RS_ERROR; recentAt = millis(); return; }
   RecentItem got[6];
   int n = 0;
   for (JsonObject it : doc["items"].as<JsonArray>()) {
