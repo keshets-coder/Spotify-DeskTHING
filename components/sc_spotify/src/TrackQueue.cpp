@@ -137,7 +137,9 @@ QueuedTrack::QueuedTrack(
   this->ref = ref;
   this->audioFormat = ctx->config.audioFormat;
   this->trackInfo.provider = ref.provider;
-  for (int i = 0; i < ref.full_metadata_count; i++) {
+  for (int i = 0; ref.metadata && i < ref.full_metadata_count; i++) {
+    if (!ref.metadata[i].key || !ref.metadata[i].value)
+      continue;
     if (strcmp(ref.metadata[i].key, "page_instance_id") == 0) {
       this->trackInfo.page_instance_id = ref.metadata[i].value;
     } else if (strcmp(ref.metadata[i].key, "interaction_id") == 0) {
@@ -146,7 +148,9 @@ QueuedTrack::QueuedTrack(
       this->trackInfo.decision_id = ref.metadata[i].value;
     }
   }
-  if (!strstr(ref.uri, "spotify:delimiter")) {
+  // Desk Thing: a track reference without a URI (e.g. from a failed
+  // autoplay lookup) can't be played; treat it like a delimiter.
+  if (ref.uri && ref.uri[0] && !strstr(ref.uri, "spotify:delimiter")) {
     this->gid = base62Decode(ref.uri);
     state = State::QUEUED;
     processSemaphore_->give();
