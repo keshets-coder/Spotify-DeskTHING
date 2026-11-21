@@ -1,3 +1,4 @@
+#include <strings.h>
 #include "HTTPClient.h"
 
 #include <string.h>   // for memcpy
@@ -241,7 +242,7 @@ bool HTTPClient::Response::rawRequest(const std::string& url,
   urlParser = bell::URLParser::parse(url);
 
   const char* reqEnd = "\r\n";
-  const int kMaxAttempts = 5;
+  const int kMaxAttempts = 2;
   uint8_t attempts = kMaxAttempts;
   do {
     responseHeaders.clear();
@@ -277,6 +278,15 @@ bool HTTPClient::Response::rawRequest(const std::string& url,
     }
 
     socketStream << "Accept: */*" << reqEnd;
+    {
+      // some CDNs leave requests without a User-Agent unanswered
+      bool hasUA = false;
+      for (auto& h : headers)
+        if (strcasecmp(h.first.c_str(), "User-Agent") == 0)
+          hasUA = true;
+      if (!hasUA)
+        socketStream << "User-Agent: Spotify/127700358 Linux/0 (Desk Thing)" << reqEnd;
+    }
 
     // Write content
     if (!content.empty()) {
@@ -574,7 +584,7 @@ bool HTTPClient::Response::readResponseHeaders() {
       // Desk Thing: a TLS read that timed out or needs another record
       // (WANT_READ) also returns 0 but leaves the socket open: keep waiting
       // instead of dropping a request the server is still answering.
-      if (socketStream.isOpen() && nowMs() - startMs < 2500) {
+      if (socketStream.isOpen() && nowMs() - startMs < 4000) {
         BELL_SLEEP_MS(10);
         continue;
       }

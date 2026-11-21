@@ -97,6 +97,7 @@ class QueuedTrack {
 
   std::vector<uint8_t> trackId, fileId, audioKey;
   std::string cdnUrl;
+  std::vector<std::string> altCdnUrls;
   std::pair<SpotifyFileType, std::vector<uint8_t>> gid = {
       SpotifyFileType::UNKNOWN,
       {}};

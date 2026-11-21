@@ -192,7 +192,9 @@ std::shared_ptr<spotify::CDNAudioFile> QueuedTrack::getAudioFile() {
     return nullptr;
   }
 
-  return std::make_shared<spotify::CDNAudioFile>(cdnUrl, audioKey);
+  auto f = std::make_shared<spotify::CDNAudioFile>(cdnUrl, audioKey);
+  f->altUrls = altCdnUrls;
+  return f;
 }
 
 bool QueuedTrack::stepParseMetadata(Track* pbTrack, Episode* pbEpisode) {
@@ -342,6 +344,10 @@ void QueuedTrack::stepLoadCDNUrl(const std::string& accessKey) {
 #else
     auto jsonResult = nlohmann::json::parse(result);
     cdnUrl = jsonResult["cdnurl"][0];
+    altCdnUrls.clear();
+    for (size_t i = 1; i < jsonResult["cdnurl"].size(); i++)
+      altCdnUrls.push_back(jsonResult["cdnurl"][i].get<std::string>());
+    SC32_LOG(info, "Received %u CDN URLs", (unsigned)jsonResult["cdnurl"].size());
 #endif
 
     // SC32_LOG(info, "Received CDN URL, %s", cdnUrl.c_str());

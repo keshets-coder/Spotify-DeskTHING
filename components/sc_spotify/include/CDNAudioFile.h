@@ -20,6 +20,8 @@ class CDNAudioFile {
 
  public:
   CDNAudioFile(const std::string& cdnUrl, const std::vector<uint8_t>& audioKey);
+  /** Other CDN URLs for the same file, tried when one doesn't answer. */
+  std::vector<std::string> altUrls;
 
 #ifndef CONFIG_BELL_NOCODEC
   /**
@@ -115,6 +117,9 @@ class CDNAudioFile {
   bool openWire(size_t from);
 
   std::string cdnUrl;
+  size_t urlIndex_ = 0;
+  std::unique_ptr<bell::HTTPClient::Response> getAny(
+      bell::HTTPClient::Headers headers);
   std::vector<uint8_t> audioKey;
 
   void decrypt(uint8_t* dst, size_t nbytes, size_t pos);

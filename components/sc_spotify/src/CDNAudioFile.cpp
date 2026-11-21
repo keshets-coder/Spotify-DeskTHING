@@ -180,12 +180,33 @@ void CDNAudioFile::close() {
   response.reset();
 }
 
+// Spotify gives several CDN URLs for a file. Some CDN hosts sometimes never
+// answer a request: try the next URL instead of waiting on the same one.
+std::unique_ptr<bell::HTTPClient::Response> CDNAudioFile::getAny(
+    bell::HTTPClient::Headers headers) {
+  std::vector<std::string> urls{cdnUrl};
+  urls.insert(urls.end(), altUrls.begin(), altUrls.end());
+  std::unique_ptr<bell::HTTPClient::Response> r;
+  for (size_t n = 0; n < urls.size() * 2; n++) {
+    const std::string& url = urls[(urlIndex_ + n) % urls.size()];
+    r = bell::HTTPClient::get(url, headers, false);
+    if (r && r->stream().isOpen() && r->status() >= 200 && r->status() < 300) {
+      urlIndex_ = (urlIndex_ + n) % urls.size();
+      if (n)
+        SC32_LOG(info, "CDN: using URL %u of %u", (unsigned)urlIndex_ + 1,
+                 (unsigned)urls.size());
+      return r;
+    }
+  }
+  return r;
+}
+
 uint8_t* CDNAudioFile::openStream(ssize_t& header_size) {
 
   // Open one connection for the whole file ("bytes=0-") and keep it open:
   // the following reads continue on it (see readBytes)
   close();
-  response = bell::HTTPClient::get(this->cdnUrl, {{"Range", "bytes=0-"}}, false);
+  response = getAny({{"Range", "bytes=0-"}});
   if (!response || !response->stream().isOpen() || response->status() < 200 ||
       response->status() >= 300) {
     SC32_LOG(error, "CDN: can't open the file (HTTP %d)",
@@ -348,8 +369,7 @@ bool CDNAudioFile::openWire(size_t from) {
   streaming_ = false;
   response.reset();  // closes the previous connection
   size_t to = this->totalFileSize ? this->totalFileSize - 1 : from + HTTP_BUFFER_SIZE - 1;
-  response = bell::HTTPClient::get(
-      cdnUrl, {bell::HTTPClient::RangeHeader::range(from, to)}, false);
+  response = getAny({bell::HTTPClient::RangeHeader::range(from, to)});
   if (!response || !response->stream().isOpen() || response->status() < 200 ||
       response->status() >= 300) {
     SC32_LOG(error, "CDN: request at %u failed (status %d)", (unsigned)from,
