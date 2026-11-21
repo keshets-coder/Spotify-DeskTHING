@@ -95,10 +95,11 @@ Open `main/SpotifyCarThing.cpp` and fill in the only two lines you must change:
 #define SPOTIFY_CLIENT_SECRET "your-spotify-client-secret"
 ```
 
-**Optional: time zone.** The clock is set to New Zealand time. To change it, replace `TZ_INFO` with your zone's POSIX string, for example:
+**Optional: time zone.** The clock is set to Israel time. To change it, replace `TZ_INFO` with your zone's POSIX string, for example:
 
 | Region | `TZ_INFO` |
 |---|---|
+| Israel | `IST-2IDT,M3.4.4/26,M10.5.0` |
 | New Zealand | `NZST-12NZDT,M9.5.0,M4.1.0/3` |
 | Sydney | `AEST-10AEDT,M10.1.0,M4.1.0/3` |
 | London | `GMT0BST,M3.5.0/1,M10.5.0` |

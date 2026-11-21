@@ -21,7 +21,7 @@
 
 #define REDIRECT_URI    "http://127.0.0.1:8888/callback"
 #define DEVICE_HOSTNAME "carthing"
-#define TZ_INFO         "NZST-12NZDT,M9.5.0,M4.1.0/3"
+#define TZ_INFO         "IST-2IDT,M3.4.4/26,M10.5.0"  // Israel. New Zealand: "NZST-12NZDT,M9.5.0,M4.1.0/3"
 
 // Encoder on the board's 4-pin UART socket (UART0 is free because logs go over USB).
 #define ENC_A 43  // CLK, UART0 TX pin
@@ -385,8 +385,14 @@ void copyFold(char* dst, size_t cap, const char* src) {
     else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; n = 2; }
     else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; n = 3; }
     else { p++; continue; }
+    const uint8_t* start = p;
     p++;
     for (int i = 0; i < n && *p; i++, p++) cp = (cp << 6) | (*p & 0x3F);
+    // Hebrew letters are in the fonts: keep them (vowel points are dropped).
+    if ((cp >= 0x05D0 && cp <= 0x05EA) || cp == 0x05BE || cp == 0x05F3 || cp == 0x05F4) {
+      if (o + 2 < cap) { dst[o++] = start[0]; dst[o++] = start[1]; }
+      continue;
+    }
     const char* r = foldCp(cp);
     while (*r && o + 1 < cap) dst[o++] = *r++;
   }
