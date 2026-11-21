@@ -147,6 +147,8 @@ void PlayerContext::autoplayQuery(
                                  &playerState->context_url[10]);
       break;
     case 2:
+      if (tracks->empty() || !tracks->at(0).uri)
+        return responseFunction((void*)radio_offset);
       requestUrl = string_format("hm://autoplay-enabled/query?uri=%s",
                                  tracks->at(0).uri);
       break;
@@ -159,9 +161,13 @@ void PlayerContext::autoplayQuery(
       if (tries < 2) {
         return autoplayQuery(metadata_map, responseFunction, tries + 1);
       }
-      //else
-      //return responseFunction((void*)radio_offset);
+      // Desk Thing: no autoplay for this context. Going on read parts[0] of
+      // an empty reply (undefined behaviour, then a silent reset).
+      return responseFunction((void*)radio_offset);
     }
+    // nothing to base a radio on yet (e.g. a playlist that didn't load)
+    if (tracks->empty() || !tracks->at(0).uri)
+      return responseFunction((void*)radio_offset);
     std::string resolve_autoplay =
         std::string(res.parts[0].begin(), res.parts[0].end());
     std::string requestUrl;

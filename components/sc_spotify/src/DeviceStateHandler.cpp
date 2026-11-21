@@ -479,6 +479,10 @@ void DeviceStateHandler::reloadTrackList(void* data) {
       !handler->ctx->playbackMetrics || !handler->playerContext ||
       !handler->trackQueue || !handler->trackPlayer)
     return;
+  if (handler->currentTracks.empty()) {
+    SC32_LOG(error, "Tracklist is empty, nothing to play");
+    return;
+  }
   handler->ctx->playbackMetrics->uri2context(
       handler->playerContext->context_uri);
   if (data == NULL) {
