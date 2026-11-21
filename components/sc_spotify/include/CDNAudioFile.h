@@ -45,6 +45,8 @@ class CDNAudioFile {
     * @returns char* where to read data from
     */
   uint8_t* openStream(ssize_t&);
+  /** Closes the CDN connection (the next read reopens it if needed). */
+  void close();
 
   /**
     * @brief Read and decrypt part of the cdn stream

@@ -173,14 +173,25 @@ size_t CDNAudioFile::readBytes(uint8_t* dst, size_t bytes) {
  * @param header_size Reference to a size_t variable where the size of the header is stored.
  * @return Pointer to the beginning of the HTTP buffer where the track header data is stored.
  */
+void CDNAudioFile::close() {
+  streaming_ = false;
+  if (response && response->stream().isOpen())
+    response->stream().close();
+  response.reset();
+}
+
 uint8_t* CDNAudioFile::openStream(ssize_t& header_size) {
 
   // Open one connection for the whole file ("bytes=0-") and keep it open:
   // the following reads continue on it (see readBytes)
-  streaming_ = false;
+  close();
   response = bell::HTTPClient::get(this->cdnUrl, {{"Range", "bytes=0-"}}, false);
   if (!response || !response->stream().isOpen() || response->status() < 200 ||
       response->status() >= 300) {
+    SC32_LOG(error, "CDN: can't open the file (HTTP %d)",
+             response ? response->status() : -1);
+    close();
+    header_size = -1;  // let the player fail the track instead of hanging
     return nullptr;
   }
 

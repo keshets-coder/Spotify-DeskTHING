@@ -214,6 +214,8 @@ void TrackPlayer::runTask() {
       }
 #endif
       if (pendingReset || !currentSongPlaying) {
+        currentTrackStream->close();
+        currentTrackStream = nullptr;
         continue;
       }
       track->trackMetrics->startTrackDecoding();
@@ -331,6 +333,10 @@ void TrackPlayer::runTask() {
 #endif
 
       // always move back to LOADING (ensure proper seeking after last track has been loaded)
+      // Desk Thing: close the CDN connection now. The queued track keeps the
+      // file object, and its open socket used to stay open after a skip.
+      if (currentTrackStream)
+        currentTrackStream->close();
       currentTrackStream = nullptr;
       track->loading = false;
     }

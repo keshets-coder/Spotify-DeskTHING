@@ -1350,7 +1350,13 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
         if (!this->trackQueue->preloadedTracks[0]->loading)
           needsToBeSkipped = false;
 #endif
-        if (command->at("relative") == "beginning") {  //relative
+        // Web API seeks (PUT /me/player/seek) come without "relative":
+        // they are absolute positions.
+        std::string relative = command->contains("relative") &&
+                                       command->at("relative").is_string()
+                                   ? command->at("relative").get<std::string>()
+                                   : std::string("beginning");
+        if (relative == "beginning") {  //relative
           this->device.player_state.has_position_as_of_timestamp = true;
           this->device.player_state.position_as_of_timestamp =
               command->at("value").get<int64_t>();
@@ -1359,11 +1365,11 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
           this->trackPlayer->seekMs(
               command->at("value").get<uint32_t>(),
               this->trackQueue->preloadedTracks[0]->loading);
-        } else if (command->at("relative") == "current") {
+        } else if (relative == "current") {
           this->device.player_state.has_position_as_of_timestamp = true;
           this->device.player_state.position_as_of_timestamp =
               command->at("value").get<int64_t>() +
-              command->at("position").get<int64_t>();
+              command->value("position", (int64_t)0);
           this->trackPlayer->seekMs(
               this->device.player_state.position_as_of_timestamp,
               this->trackQueue->preloadedTracks[0]->loading);
