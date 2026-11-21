@@ -1544,17 +1544,129 @@ void fitText(char* out, size_t cap, const char* s, int maxW) {
   }
 }
 
+// ---- right-to-left text (Hebrew)
+// The fonts draw left to right, so text with Hebrew is put into visual order
+// first: a small version of the Unicode bidi algorithm (strong letters,
+// numbers kept left to right, neutrals take their neighbours' direction,
+// mirrored brackets).
+
+static bool isRtlCp(uint32_t c) { return (c >= 0x0590 && c <= 0x05FF) || (c >= 0xFB1D && c <= 0xFB4F); }
+static bool isDigitCp(uint32_t c) { return c >= '0' && c <= '9'; }
+static bool isLtrCp(uint32_t c) {
+  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= 0xC0 && c < 0x2000 && !isRtlCp(c) && c != 0xD7 && c != 0xF7);
+}
+
+static size_t utf8Decode(const char* s, uint32_t* out, size_t cap) {
+  size_t n = 0;
+  const uint8_t* p = (const uint8_t*)s;
+  while (*p && n < cap) {
+    uint32_t c = *p++;
+    int more = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+    if (more) c &= 0x3F >> more;
+    while (more-- && (*p & 0xC0) == 0x80) c = (c << 6) | (*p++ & 0x3F);
+    out[n++] = c;
+  }
+  return n;
+}
+
+static void utf8Encode(const uint32_t* cp, size_t n, char* out, size_t cap) {
+  size_t o = 0;
+  for (size_t i = 0; i < n; i++) {
+    uint32_t c = cp[i];
+    char b[4];
+    int k;
+    if (c < 0x80) { b[0] = c; k = 1; }
+    else if (c < 0x800) { b[0] = 0xC0 | (c >> 6); b[1] = 0x80 | (c & 0x3F); k = 2; }
+    else if (c < 0x10000) { b[0] = 0xE0 | (c >> 12); b[1] = 0x80 | ((c >> 6) & 0x3F); b[2] = 0x80 | (c & 0x3F); k = 3; }
+    else { b[0] = 0xF0 | (c >> 18); b[1] = 0x80 | ((c >> 12) & 0x3F); b[2] = 0x80 | ((c >> 6) & 0x3F); b[3] = 0x80 | (c & 0x3F); k = 4; }
+    if (o + k >= cap) break;
+    memcpy(out + o, b, k);
+    o += k;
+  }
+  out[o] = 0;
+}
+
+static uint32_t mirrorCp(uint32_t c) {
+  switch (c) {
+    case '(': return ')'; case ')': return '(';
+    case '[': return ']'; case ']': return '[';
+    case '{': return '}'; case '}': return '{';
+    case '<': return '>'; case '>': return '<';
+  }
+  return c;
+}
+
+// Returns true and fills out when s has Hebrew and needed reordering.
+bool bidiVisual(const char* s, char* out, size_t cap) {
+  const uint8_t* q = (const uint8_t*)s;
+  bool any = false;
+  for (; *q; q++) if (*q == 0xD6 || *q == 0xD7 || *q == 0xEF) { any = true; break; }
+  if (!any) return false;
+  static uint32_t cp[160];
+  static uint8_t lvl[160];
+  size_t n = utf8Decode(s, cp, 160);
+  // 0 = neutral, 1 = left-to-right, 2 = right-to-left, 3 = number
+  static uint8_t ty[160];
+  bool hasRtl = false;
+  int base = -1;
+  for (size_t i = 0; i < n; i++) {
+    uint32_t c = cp[i];
+    ty[i] = isRtlCp(c) ? 2 : isDigitCp(c) ? 3 : isLtrCp(c) ? 1 : 0;
+    if (ty[i] == 2) hasRtl = true;
+    if (base < 0 && (ty[i] == 1 || ty[i] == 2)) base = ty[i] == 2 ? 1 : 0;
+  }
+  if (!hasRtl) return false;
+  if (base < 0) base = 1;
+  // Numbers glued to a number by . , : - / stay one number.
+  for (size_t i = 1; i + 1 < n; i++)
+    if (ty[i] == 0 && ty[i - 1] == 3 && ty[i + 1] == 3 && strchr(".,:-/", (int)cp[i])) ty[i] = 3;
+  // Neutrals between two runs of the same direction take it, else the base.
+  for (size_t i = 0; i < n; i++) {
+    if (ty[i] != 0) continue;
+    size_t j = i;
+    while (j < n && ty[j] == 0) j++;
+    int before = i == 0 ? (base ? 2 : 1) : (ty[i - 1] == 2 ? 2 : 1);
+    int after = j >= n ? (base ? 2 : 1) : (ty[j] == 2 ? 2 : 1);
+    int d = before == after ? before : (base ? 2 : 1);
+    for (size_t k = i; k < j; k++) ty[k] = d == 2 ? 4 : 5;  // 4 = neutral as RTL, 5 = as LTR
+    i = j - 1;
+  }
+  uint8_t maxL = 0;
+  for (size_t i = 0; i < n; i++) {
+    bool rtl = ty[i] == 2 || ty[i] == 4;
+    if (base) lvl[i] = rtl ? 1 : 2;
+    else lvl[i] = rtl ? 1 : (ty[i] == 3 && i && lvl[i - 1] == 1 ? 2 : 0);
+    if (lvl[i] > maxL) maxL = lvl[i];
+    if (lvl[i] & 1) cp[i] = mirrorCp(cp[i]);
+  }
+  for (int L = maxL; L >= 1; L--) {
+    for (size_t i = 0; i < n;) {
+      if (lvl[i] < L) { i++; continue; }
+      size_t j = i;
+      while (j < n && lvl[j] >= L) j++;
+      for (size_t a = i, b = j - 1; a < b; a++, b--) {
+        std::swap(cp[a], cp[b]);
+        std::swap(lvl[a], lvl[b]);
+      }
+      i = j;
+    }
+  }
+  utf8Encode(cp, n, out, cap);
+  return true;
+}
+
 void txt(const char* s, int x, int y, const lgfx::IFont* f, uint16_t c, textdatum_t d = textdatum_t::top_left, int maxW = 0) {
   spr.setFont(f);
   spr.setTextColor(c);
   spr.setTextDatum(d);
+  char buf[160];
   if (maxW > 0 && spr.textWidth(s) > maxW) {
-    char buf[160];
     fitText(buf, sizeof(buf), s, maxW);
-    spr.drawString(buf, x, y);
-  } else {
-    spr.drawString(s, x, y);
+    s = buf;
   }
+  char vis[480];
+  if (bidiVisual(s, vis, sizeof(vis))) s = vis;
+  spr.drawString(s, x, y);
 }
 
 int textW(const char* s, const lgfx::IFont* f) {
@@ -1570,6 +1682,15 @@ float advOf(const lgfx::IFont* f, char ch) {
 }
 
 void capsTxt(const char* s, int x, int y, const lgfx::IFont* f, uint16_t col, float gap, int maxW) {
+  // Letter-spaced capitals only work for plain ASCII; draw anything else
+  // (Hebrew names, accents) as normal text.
+  for (const uint8_t* p = (const uint8_t*)s; *p; p++) {
+    if (*p >= 0x80) {
+      auto v = (const lgfx::VLWfont*)f;
+      txt(s, x, y + (v->maxAscent - v->maxDescent) / 2, f, col, textdatum_t::baseline_left, maxW);
+      return;
+    }
+  }
   auto v = (const lgfx::VLWfont*)f;
   spr.setFont(f);
   spr.setTextColor(col);
