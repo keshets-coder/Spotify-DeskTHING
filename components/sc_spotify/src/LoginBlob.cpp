@@ -1,3 +1,4 @@
+#include <stdexcept>
 #include "LoginBlob.h"
 
 #include <stdio.h>           // for sprintf
@@ -99,8 +100,10 @@ std::vector<uint8_t> LoginBlob::decodeBlob(
 
   // Check checksum
   if (mac != checksum) {
-    SC32_LOG(error, "Mac doesn't match! Mac: %s, Checksum: %s", mac.data(),
-             checksum.data());
+    // Desk Thing: stop here. Decrypting with the wrong key gives garbage that
+    // used to crash decodeBlobSecondary (e.g. after a reboot changed our DH key).
+    SC32_LOG(error, "Zeroconf blob checksum doesn't match, ignoring it");
+    throw std::runtime_error("zeroconf blob checksum mismatch");
   }
 
   encryptionKey =
@@ -111,6 +114,8 @@ std::vector<uint8_t> LoginBlob::decodeBlob(
 }
 
 uint32_t LoginBlob::readBlobInt(const std::vector<uint8_t>& data) {
+  if (blobSkipPosition + 2 > data.size())
+    throw std::runtime_error("zeroconf blob truncated");
   auto lo = data[blobSkipPosition];
   if ((int)(lo & 0x80) == 0) {
     this->blobSkipPosition += 1;
@@ -144,8 +149,10 @@ std::vector<uint8_t> LoginBlob::decodeBlobSecondary(
   crypto->aesECBdecrypt(key, blobData);
 
   auto l = blobData.size();
+  if (l < 16)
+    throw std::runtime_error("zeroconf blob too short");
 
-  for (int i = 0; i < l - 16; i++) {
+  for (size_t i = 0; i < l - 16; i++) {
     blobData[l - i - 1] ^= blobData[l - i - 17];
   }
 
@@ -167,6 +174,8 @@ void LoginBlob::loadZeroconf(const std::vector<uint8_t>& blob,
   this->authType = readBlobInt(loginData);
   blobSkipPosition += 1;
   auto authSize = readBlobInt(loginData);
+  if (blobSkipPosition + authSize > loginData.size())
+    throw std::runtime_error("zeroconf blob truncated");
   this->username = username;
   this->authData =
       std::vector<uint8_t>(loginData.begin() + blobSkipPosition,

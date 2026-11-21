@@ -11,6 +11,9 @@
 #include "ZeroConf.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_memory_utils.h"
+#include "freertos/semphr.h"
+#include <functional>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mdns.h"
@@ -26,6 +29,40 @@ std::function<bool(const std::string&)> EINK_LOG_CALLBACK = nullptr;
 
 namespace {
 
+// Flash writes (and reads) switch the cache off, which is only allowed from a
+// task whose stack is in internal RAM. StreamCore32 runs its Spotify tasks with
+// PSRAM stacks, so NVS calls from them run here on a short-lived helper task.
+struct NvsJob {
+  std::function<int()> fn;
+  int result;
+  SemaphoreHandle_t done;
+};
+
+static void nvsJobTask(void* arg) {
+  auto* job = static_cast<NvsJob*>(arg);
+  job->result = job->fn();
+  xSemaphoreGive(job->done);
+  vTaskDelete(nullptr);
+}
+
+static int onInternalStack(std::function<int()> fn) {
+  int probe = 0;
+  if (!esp_ptr_external_ram(&probe))
+    return fn();
+  NvsJob job{std::move(fn), -1, xSemaphoreCreateBinary()};
+  if (!job.done)
+    return -1;
+  // xTaskCreate allocates the stack from internal RAM.
+  if (xTaskCreatePinnedToCore(nvsJobTask, "spk_nvs", 4096, &job, 5, nullptr,
+                              tskNO_AFFINITY) != pdPASS) {
+    vSemaphoreDelete(job.done);
+    return -1;
+  }
+  xSemaphoreTake(job.done, portMAX_DELAY);
+  vSemaphoreDelete(job.done);
+  return job.result;
+}
+
 // ------------------------------------------------- saved Spotify login (NVS)
 // One record (the current user) is enough for the Desk Thing.
 class NvsLoginStore : public StreamCoreFile {
@@ -33,6 +70,16 @@ class NvsLoginStore : public StreamCoreFile {
   explicit NvsLoginStore(const char* ns) : ns_(ns) {}
 
   int save(const Record& r, bool overwrite = true) override {
+    return onInternalStack([&] { return saveNow(r); });
+  }
+  int erase(const std::string&) override {
+    return onInternalStack([&] { return eraseNow(); });
+  }
+  int get_current(Record* out) override {
+    return onInternalStack([&] { return getCurrentNow(out); });
+  }
+
+  int saveNow(const Record& r) {
     nvs_handle_t h;
     if (nvs_open(ns_, NVS_READWRITE, &h) != ESP_OK)
       return -1;
@@ -64,7 +111,7 @@ class NvsLoginStore : public StreamCoreFile {
     Record r;
     return get_current(&r) == 0 && r.userkey == userkey ? 1 : 0;
   }
-  int erase(const std::string&) override {
+  int eraseNow() {
     nvs_handle_t h;
     if (nvs_open(ns_, NVS_READWRITE, &h) != ESP_OK)
       return -1;
@@ -74,7 +121,7 @@ class NvsLoginStore : public StreamCoreFile {
     return 0;
   }
   int set_current(const std::string&) override { return 0; }
-  int get_current(Record* out) override {
+  int getCurrentNow(Record* out) {
     nvs_handle_t h;
     if (nvs_open(ns_, NVS_READONLY, &h) != ESP_OK)
       return -1;

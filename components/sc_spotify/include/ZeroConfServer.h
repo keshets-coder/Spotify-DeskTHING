@@ -68,8 +68,16 @@ class ZeroconfAuthenticator {
 
              SC32_LOG(info, "Received zeroauth POST data");
 
-             // Pass user's credentials to the blob
-             blob->loadZeroconfQuery(queryMap);
+             // Pass user's credentials to the blob. A blob we can't decode
+             // (stale key, bad data) is refused instead of crashing.
+             try {
+               blob->loadZeroconfQuery(queryMap);
+             } catch (const std::exception& e) {
+               SC32_LOG(error, "Zeroconf login refused: %s", e.what());
+               obj["status"] = 202;
+               obj["statusString"] = "ERROR-LOGIN-FAILED";
+               return obj.dump();
+             }
              onAuthSuccess(blob);
            }
 
