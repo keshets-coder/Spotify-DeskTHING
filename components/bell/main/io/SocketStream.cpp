@@ -29,6 +29,11 @@ int SocketBuffer::open(const std::string& hostname, int port, bool isSSL) {
   if (internalSocket != nullptr) {
     close();
   }
+  // Desk Thing: start the new connection with empty buffers. Bytes left
+  // over from a failed write (or unread input) used to be sent / read on the
+  // next connection, garbling the request so the server never answered.
+  setp(obuf, obuf + bufLen);
+  setg(nullptr, nullptr, nullptr);
   if (isSSL) {
     internalSocket = std::make_unique<bell::TLSSocket>();
   } else {

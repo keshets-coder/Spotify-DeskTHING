@@ -241,7 +241,7 @@ bool HTTPClient::Response::rawRequest(const std::string& url,
   urlParser = bell::URLParser::parse(url);
 
   const char* reqEnd = "\r\n";
-  const int kMaxAttempts = 3;
+  const int kMaxAttempts = 4;
   uint8_t attempts = kMaxAttempts;
   do {
     responseHeaders.clear();
@@ -249,6 +249,9 @@ bool HTTPClient::Response::rawRequest(const std::string& url,
     rawBodyReadPos = 0;
     httpBufferAvailable = 0;
     statusCode = 0;
+    // a failed write or read earlier sets fail/bad bits, and then every
+    // "<<" below is silently skipped: the request would never be sent
+    socketStream.clear();
     if (!socketStream.isOpen()) {
       if (connect(url, maxHeaders) != 0) {
         BELL_LOG(info, "httpClient", "Failed to open socket");
@@ -300,9 +303,12 @@ bool HTTPClient::Response::rawRequest(const std::string& url,
     }
 
     socketStream.flush();
-    // Parse response
-    if (readResponseHeaders())
+    if (!socketStream.good()) {
+      BELL_LOG(error, "httpClient", "Couldn't send the request to %s (will retry)",
+               urlParser.host.c_str());
+    } else if (readResponseHeaders()) {
       return true;
+    }
     // failed to get headers, drop socket and try again
     socketStream.close();
     if (--attempts)
@@ -568,7 +574,7 @@ bool HTTPClient::Response::readResponseHeaders() {
       // Desk Thing: a TLS read that timed out or needs another record
       // (WANT_READ) also returns 0 but leaves the socket open: keep waiting
       // instead of dropping a request the server is still answering.
-      if (socketStream.isOpen() && nowMs() - startMs < 10000) {
+      if (socketStream.isOpen() && nowMs() - startMs < 5000) {
         BELL_SLEEP_MS(10);
         continue;
       }
