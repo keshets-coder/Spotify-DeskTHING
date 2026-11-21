@@ -39,12 +39,20 @@ It controls whatever device Spotify is already playing on (your phone, computer 
 
 | Encoder pin | Board pin |
 |---|---|
-| CLK (A) | IO15 |
-| DT (B) | IO16 |
+Use the board's 4-pin **UART** socket (1.25mm, the one labelled UART). Nothing else on the board uses it, because the Serial Monitor runs over USB.
+
+| Encoder pin | Board pin (UART socket) |
+|---|---|
+| CLK (A) | IO43 (TX) |
+| DT (B) | IO44 (RX) |
 | + | 3.3V |
 | GND | GND |
 
-The push switch (SW) isn't used.
+The push switch (SW) isn't used. The UART socket has no spare pin for it.
+
+**USB CDC On Boot must be Enabled** (see step 4), or the code won't compile. With it off, the board would use these pins for the Serial Monitor.
+
+If CLK and DT end up swapped, nothing breaks: the volume just turns the wrong way, which `ENC_REVERSE` below fixes.
 
 **Wire straight to the encoder's own legs, not the module header.** On some modules, the resistors on the header stop the board reading the knob.
 
@@ -200,7 +208,7 @@ The login is saved, so you only do this once.
 | "No Spotify device found" | Open Spotify on your phone or computer and play something once. The Desk Thing controls an existing Spotify device. |
 | Recently played asks for permission | Log out (in Settings) and log in again, so the new permission is granted. |
 | Nothing shows up after logging in | Check the Client ID and secret, that the Redirect URI matches exactly, and that your account is listed under **User Management** if you're not the app owner. |
-| Knob does nothing | Check it's wired to IO14/IO21 on the encoder's legs. Watch the Serial Monitor for `[enc]` lines while turning it. |
+| Knob does nothing | Check it's wired to IO43/IO44 on the UART socket, from the encoder's legs, and that USB CDC On Boot is Enabled. Watch the Serial Monitor for `[enc]` lines while turning it. |
 | "Reconnecting…" in the top bar | Wi-Fi or Spotify is briefly unreachable. It recovers by itself. |
 | Can't open carthing.local | Use the IP address shown on the device's screen instead. Some networks block `.local` names. |
 
