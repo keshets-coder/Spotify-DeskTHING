@@ -262,18 +262,26 @@ bool QueuedTrack::stepParseMetadata(Track* pbTrack, Episode* pbEpisode) {
     SC32_LOG(info, "No playable files found");
     return false;
   }
-  // Find playable file
-  for (int x = 0; x < filesCount; x++) {
-    if (selectedFiles[x].format == audioFormat) {
-      fileId = pbArrayToVector(selectedFiles[x].file_id);
-      break;  // If file found stop searching
-    }
-
-    // Fallback to OGG Vorbis 96kbps
-    if (fileId.size() == 0 &&
-        selectedFiles[x].format == AudioFormat_OGG_VORBIS_96) {
-      fileId = pbArrayToVector(selectedFiles[x].file_id);
-      SC32_LOG(info, "Falling back to OGG Vorbis 96kbps");
+  // Find playable file: the configured format first, then the other Ogg
+  // Vorbis qualities. Skip files whose audio key Spotify already refused.
+  {
+    AudioFormat order[4] = {audioFormat, AudioFormat_OGG_VORBIS_160,
+                            AudioFormat_OGG_VORBIS_96,
+                            AudioFormat_OGG_VORBIS_320};
+    for (int o = 0; o < 4 && fileId.size() == 0; o++) {
+      for (int x = 0; x < filesCount; x++) {
+        if (selectedFiles[x].format != order[o]) continue;
+        auto id = pbArrayToVector(selectedFiles[x].file_id);
+        std::string hex = bytesToHexString(id);
+        bool refused = false;
+        for (auto& r : refusedFiles)
+          if (r == hex) refused = true;
+        if (refused) continue;
+        fileId = id;
+        if (o > 0 && order[o] != audioFormat)
+          SC32_LOG(info, "Using format %d instead", (int)order[o]);
+        break;
+      }
     }
   }
 
@@ -306,9 +314,10 @@ void QueuedTrack::stepLoadAudioFile(
           updateSemaphore->give();
         } else {
           retries++;
+          // reply: [4-byte seq][2-byte error code]
+          unsigned code = 0;
           {
-            // reply: [4-byte seq][2-byte error code]
-            unsigned code = audioKey.size() >= 6
+            code = audioKey.size() >= 6
                                 ? (unsigned)((audioKey[4] << 8) | audioKey[5])
                                 : 0xFFFF;
             int64_t waited = esp_timer_get_time() / 1000 - keyRequestedAtMs;
@@ -325,14 +334,19 @@ void QueuedTrack::stepLoadAudioFile(
                          std::min<int64_t>(700 * retries, 3000);
           updateSemaphore->give();
           state = State::KEY_REQUIRED;
-          if (retries > 10) {
-            if (audioFormat > AudioFormat_OGG_VORBIS_96) {
-              audioFormat = (AudioFormat)(audioFormat - 1);
-              state = State::QUEUED;
-              updateSemaphore->give();
-            } else {
+          if (code == 2 ? retries >= 2 : retries > 10) {
+            // Spotify keeps refusing this file: try another copy of the song
+            refusedFiles.push_back(identifier);
+            retries = 0;
+            keyRetryAtMs = 0;
+            fileId.clear();
+            if (refusedFiles.size() >= 4) {
               cancelLoading();
+            } else {
+              SC32_LOG(info, "Audio key refused, trying another file");
+              state = State::QUEUED;
             }
+            updateSemaphore->give();
           }
         }
       });

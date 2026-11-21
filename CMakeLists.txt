@@ -15,3 +15,6 @@ project(SpotifyDeskThing)
 # Serial prints go to the USB-C port.
 idf_build_set_property(COMPILE_DEFINITIONS "ARDUINO_USB_MODE=1" APPEND)
 idf_build_set_property(COMPILE_DEFINITIONS "ARDUINO_USB_CDC_ON_BOOT=1" APPEND)
+# The Arduino IDE sets this for PSRAM boards. Without it Arduino Strings are
+# capped at 64 KB, and big Spotify replies (Liked Songs, ~90 KB) fail to load.
+idf_build_set_property(COMPILE_DEFINITIONS "BOARD_HAS_PSRAM" APPEND)
