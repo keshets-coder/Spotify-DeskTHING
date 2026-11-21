@@ -629,7 +629,12 @@ int api(const char* method, const String& path, const String& body = "", String*
     bool isGet = strcmp(method, "GET") == 0;
     int size = code > 0 ? apiHttp.getSize() : 0;
     bool noBody = code == 204 || code == 304 || ((code == 202 || !isGet) && size <= 0);
-    if (code > 0 && !noBody) resp = apiHttp.getString();
+    if (code > 0 && !noBody) {
+      resp = apiHttp.getString();
+      if (resp.length() == 0 && size != 0)
+        Serial.printf("[api] %s %s: reply body lost (size %d, free psram %u, internal %u)\n", method, path.c_str(), size,
+                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    }
     if (!isGet) Serial.printf("[api] %s %s -> %d (%lums)\n", method, path.c_str(), code, (unsigned long)(millis() - t0));
     String retry = apiHttp.header("Retry-After");
     apiHttp.end();
@@ -858,8 +863,10 @@ void loadPlaylists() {
 void loadTracks(const char* id, int offset, uint16_t gen) {
   bool liked = strcmp(id, "liked") == 0;
   bool album = strncmp(id, "album:", 6) == 0;
-  String path = liked ? "/me/tracks?limit=50&offset=" + String(offset)
-              : album ? "/albums/" + String(id + 6) + "/tracks?limit=50&offset=" + String(offset)
+  // market=from_token drops the long available_markets lists, which made
+  // the liked-songs reply too big to read on the board
+  String path = liked ? "/me/tracks?limit=50&market=from_token&offset=" + String(offset)
+              : album ? "/albums/" + String(id + 6) + "/tracks?limit=50&market=from_token&offset=" + String(offset)
                       : "/playlists/" + String(id) + "/items?limit=50&offset=" + String(offset) + "&additional_types=track,episode";
   bool plain = liked || album;
   String slim = path + "&fields=" + urlEnc("total,items(item(uri,name,duration_ms,type,artists(name),show(name)))");
