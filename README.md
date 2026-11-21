@@ -31,7 +31,7 @@ It controls whatever device Spotify is already playing on (your phone, computer 
 The code is still an Arduino sketch (`main/SpotifyCarThing.cpp`), but it is built with Espressif's **ESP-IDF** instead of the Arduino IDE, with Arduino running inside it ("Arduino as a component"). The Spotify Connect player needs chip settings the Arduino IDE can't change.
 
 - **ESP-IDF 5.5** ([install guide](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32s3/get-started/index.html)). The easiest way is the **ESP-IDF extension for VS Code**: install it, run *ESP-IDF: Configure ESP-IDF Extension* and pick version **v5.5.1**. On the command line, follow the guide for your system and use `idf.py`.
-- Nothing else. The Arduino core (3.3.4), LovyanGFX and ArduinoJson are downloaded automatically on the first build.
+- Nothing else. The Arduino core (3.3.5), LovyanGFX and ArduinoJson are downloaded automatically on the first build.
 
 ---
 
@@ -114,6 +114,8 @@ You don't need to enter Wi-Fi in the code. You pick your network on the device.
 ## 4. Build and upload
 
 Connect the board with USB-C.
+
+**Put the project in a folder whose path has no spaces** (for example `C:\esp\deskthing`). ESP-IDF can't build from a path like `C:\Users\me\My Projects\...`.
 
 **VS Code (ESP-IDF extension):** open the repository folder, then in the status bar at the bottom:
 
