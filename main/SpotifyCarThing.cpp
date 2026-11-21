@@ -45,7 +45,7 @@
 #define TOUCH_ROTATION  2
 
 #define EDGE_PX 26
-#define SPI_WRITE_MHZ 80
+#define SPI_WRITE_MHZ 40
 
 char wifiSsid[33] = "";
 char wifiPass[65] = "";
@@ -3716,6 +3716,9 @@ void presentFrame() {
       }
       y++;
     }
+    // Push whole rows: a narrower window came out sheared on the ESP-IDF build.
+    x0 = 0;
+    x1 = 319;
     int h = last - top + 1, w = x1 - x0 + 1;
     lcd.setClipRect(x0, top, w, h);
     spr.pushSprite(&lcd, 0, 0);

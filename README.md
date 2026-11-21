@@ -221,7 +221,7 @@ The login is saved, so you only do this once.
 | Problem | Fix |
 |---|---|
 | Screen stays black after upload | The monitor shows `PSRAM allocation FAILED` if PSRAM is off. Delete `sdkconfig` and build again so the settings from `sdkconfig.defaults` are used. |
-| Screen shows stripes, glitches or wrong colours | Change `#define SPI_WRITE_MHZ 80` to `40` and upload again. |
+| Screen shows stripes, glitches or wrong colours | It is set to 40 MHz. If it still glitches, try `27` and upload again. |
 | "Spotify only shares songs from playlists you made or collaborate on" | Spotify only lets apps like this one read songs from playlists you own or collaborate on. Playlists you just follow show this message. |
 | "Spotify Premium is needed for playback control" | Playback control needs Premium. |
 | "No Spotify device yet" / "No Spotify device found" | Pick **Desk Thing** once in the Spotify app's device list (phone or computer on the same Wi-Fi), or play something on another device. |
