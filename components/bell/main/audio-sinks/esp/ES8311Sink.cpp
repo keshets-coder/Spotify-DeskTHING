@@ -15,6 +15,13 @@ static constexpr size_t OUT_FRAMES = PCM_BYTES / 4;
 
 static std::mutex s_cmdMutex;
 
+static int ovSeekCb(void*, ogg_int64_t, int) {
+  return -1;
+}
+static long ovTellCb(void*) {
+  return 0;
+}
+
 static size_t ovReadCb(void* ptr, size_t size, size_t nmemb, void* ds) {
   return static_cast<ES8311Sink*>(ds)->readEncoded(ptr, size * nmemb);
 }
@@ -264,7 +271,8 @@ void ES8311Sink::decodeStream(std::shared_ptr<Stream> s) {
 
   OggVorbis_File vf;
   memset(&vf, 0, sizeof(vf));
-  ov_callbacks cb = {ovReadCb, nullptr, nullptr, nullptr};
+  // Tremor calls seek and tell unconditionally: the stream isn't seekable.
+  ov_callbacks cb = {ovReadCb, ovSeekCb, nullptr, ovTellCb};
   int r = ov_open_callbacks(this, &vf, nullptr, 0, cb);
   if (r < 0) {
     if (!isCancelled(s->state))

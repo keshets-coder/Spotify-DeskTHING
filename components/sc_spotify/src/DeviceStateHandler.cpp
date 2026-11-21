@@ -387,6 +387,8 @@ DeviceStateHandler::DeviceStateHandler(
 DeviceStateHandler::~DeviceStateHandler() {
   if (isRunning.load())
     disconnect();
+  if (handler == this)
+    handler = nullptr;
   TrackReference::clearProvidedTracklist(&currentTracks);
   device.player_state.track = player_proto_connect_ProvidedTrack_init_zero;
   pb_release(player_proto_connect_Device_fields, &device);
@@ -471,6 +473,12 @@ void DeviceStateHandler::setPlayerState(
 }
 
 void DeviceStateHandler::reloadTrackList(void* data) {
+  // Desk Thing: pending Mercury replies are failed when the session drops,
+  // which can land here while the handler is being torn down.
+  if (!handler || !handler->isRunning.load() || !handler->ctx ||
+      !handler->ctx->playbackMetrics || !handler->playerContext ||
+      !handler->trackQueue || !handler->trackPlayer)
+    return;
   handler->ctx->playbackMetrics->uri2context(
       handler->playerContext->context_uri);
   if (data == NULL) {
