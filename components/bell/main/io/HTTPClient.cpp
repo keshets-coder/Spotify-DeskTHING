@@ -241,7 +241,7 @@ bool HTTPClient::Response::rawRequest(const std::string& url,
   urlParser = bell::URLParser::parse(url);
 
   const char* reqEnd = "\r\n";
-  const int kMaxAttempts = 4;
+  const int kMaxAttempts = 5;
   uint8_t attempts = kMaxAttempts;
   do {
     responseHeaders.clear();
@@ -574,7 +574,7 @@ bool HTTPClient::Response::readResponseHeaders() {
       // Desk Thing: a TLS read that timed out or needs another record
       // (WANT_READ) also returns 0 but leaves the socket open: keep waiting
       // instead of dropping a request the server is still answering.
-      if (socketStream.isOpen() && nowMs() - startMs < 5000) {
+      if (socketStream.isOpen() && nowMs() - startMs < 2500) {
         BELL_SLEEP_MS(10);
         continue;
       }

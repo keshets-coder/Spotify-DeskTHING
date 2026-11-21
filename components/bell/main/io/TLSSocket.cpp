@@ -100,10 +100,10 @@ int bell::TLSSocket::open(const std::string& host, uint16_t port) {
     if (ret == 0) {
       isClosed = false;
       // A stalled server must not block a read / write forever (the
-      // socket is blocking): each read waits at most 3 s. Callers measure
+      // socket is blocking): each read waits at most 2 s. Callers measure
       // their own idle time (8 s for audio data) and retry or skip.
       struct timeval tv;
-      tv.tv_sec = 3;
+      tv.tv_sec = 2;
       tv.tv_usec = 0;
       lwip_setsockopt(server_fd.fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
       lwip_setsockopt(server_fd.fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));

@@ -203,6 +203,8 @@ uint8_t* CDNAudioFile::openStream(ssize_t& header_size) {
   this->lastRequestPosition = 0;
   this->lastRequestCapacity = got;
   this->decrypt(this->httpBuffer.data(), got, 0);
+  SC32_LOG(info, "CDN: opened, first read %u/%u of %u", (unsigned)got,
+           (unsigned)want, (unsigned)this->totalFileSize);
   if (got == want && got % 16 == 0 && got < this->totalFileSize) {
     wirePos_ = got;
     streaming_ = true;  // continue on this connection
@@ -357,6 +359,7 @@ bool CDNAudioFile::openWire(size_t from) {
   }
   wirePos_ = from;
   streaming_ = true;
+  SC32_LOG(info, "CDN: new connection at %u", (unsigned)from);
   return true;
 }
 #endif
