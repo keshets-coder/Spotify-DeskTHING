@@ -11,6 +11,7 @@
 #include <time.h>
 #include <functional>
 #include "InterFonts.h"
+#include "DeskSpeaker.h"
 
 
 // ===================== YOUR SETTINGS =====================
@@ -22,10 +23,23 @@
 #define DEVICE_HOSTNAME "carthing"
 #define TZ_INFO         "NZST-12NZDT,M9.5.0,M4.1.0/3"
 
-#define ENC_A 14
-#define ENC_B 21
+// Encoder on the board's 4-pin UART socket (UART0 is free because logs go over USB).
+#define ENC_A 43  // CLK, UART0 TX pin
+#define ENC_B 44  // DT,  UART0 RX pin
 #define ENC_STEPS_PER_DETENT 4
 #define ENC_REVERSE false
+
+#if !ARDUINO_USB_CDC_ON_BOOT
+#error "ARDUINO_USB_CDC_ON_BOOT must be 1. The encoder uses the UART0 pins (IO43/IO44)."
+#endif
+
+// Spotify Connect speaker: the Desk Thing shows up in Spotify as a speaker and
+// plays through the speaker plugged into the board's 2-pin SPEAKER socket.
+// Set DESK_SPEAKER to false to use it only as a remote, like before.
+#define DESK_SPEAKER      true
+#define DESK_SPEAKER_NAME "Desk Thing"
+#define AMP_ENABLE_PIN    1   // FM8002E amplifier shutdown pin, low = on
+#define CODEC_I2C_ADDR    0x18
 
 #define SCREEN_ROTATION 1
 #define TOUCH_ROTATION  2
@@ -73,7 +87,7 @@ struct TR {
   uint32_t dur;
 };
 
-enum CmdType : uint8_t { C_TOGGLE, C_NEXT, C_PREV, C_SHUFFLE, C_REPEAT, C_SEEK, C_LIKE, C_OPEN_LIST, C_MORE, C_PLAY_AT, C_RELOAD_PL };
+enum CmdType : uint8_t { C_TOGGLE, C_NEXT, C_PREV, C_SHUFFLE, C_REPEAT, C_SEEK, C_LIKE, C_OPEN_LIST, C_MORE, C_PLAY_AT, C_RELOAD_PL, C_PLAY_HERE };
 struct Cmd { uint8_t type; int32_t a; int32_t b; char s[64]; };
 
 enum Screen : uint8_t { SCR_BOOT, SCR_SETUP, SCR_IDLE, SCR_LIBRARY, SCR_LIST, SCR_NOW, SCR_WIFI, SCR_WIFIPASS };
@@ -516,6 +530,9 @@ void logout() {
   trCount = 0;
   shared = Player();
   UNLOCK();
+#if DESK_SPEAKER
+  desk_speaker::forgetLogin();
+#endif
   Serial.println("[auth] logged out");
 }
 
@@ -687,19 +704,44 @@ String pickImage(JsonArray imgs, int want) {
   return String(best);
 }
 
-String findDevice() {
+void dropHolds();
+void drawScreensaver();
+bool codecOk = false;
+
+// The device to send playback to when nothing is active: the active device,
+// else this Desk Thing's own speaker, else the first one Spotify lists.
+// onlySpeaker: return the Desk Thing's speaker or nothing.
+String findDevice(bool onlySpeaker = false) {
   String body;
   if (api("GET", "/me/player/devices", "", &body) != 200) return "";
   JsonDocument doc(&spiAlloc);
   if (deserializeJson(doc, body)) return "";
-  String first;
+  String first, speaker;
   for (JsonObject d : doc["devices"].as<JsonArray>()) {
     const char* id = d["id"] | "";
     if (!id[0] || (d["is_restricted"] | false)) continue;
+    if (DESK_SPEAKER && strcmp(d["name"] | "", DESK_SPEAKER_NAME) == 0) speaker = id;
+    if (onlySpeaker) continue;
     if (d["is_active"] | false) return String(id);
     if (!first.length()) first = id;
   }
+  if (onlySpeaker || speaker.length()) return speaker;
   return first;
+}
+
+// Move playback to the Desk Thing's speaker (and start playing).
+void playHere() {
+  String dev = findDevice(true);
+  if (!dev.length()) {
+    setToast(desk_speaker::connected() ? "Spotify hasn't listed the speaker yet, try again"
+                                       : "Pick \"" DESK_SPEAKER_NAME "\" once in the Spotify app");
+    return;
+  }
+  int code = api("PUT", "/me/player", "{\"device_ids\":[\"" + dev + "\"],\"play\":true}");
+  if (code == 403) setToast("Spotify Premium is needed for playback control");
+  else if (code < 200 || code >= 300) setToast("Couldn't move playback here");
+  else setToast("Playing on the Desk Thing");
+  dropHolds();
 }
 
 void dropHolds() {
@@ -715,7 +757,8 @@ int playerCall(const char* method, const String& path, const String& body = "") 
   if (code == 404) {
     String dev = findDevice();
     if (!dev.length()) {
-      setToast("No Spotify device found. Open Spotify on your phone or PC.");
+      setToast(DESK_SPEAKER ? "No Spotify device yet. Pick \"" DESK_SPEAKER_NAME "\" once in the Spotify app."
+                           : "No Spotify device found. Open Spotify on your phone or PC.");
       return 404;
     }
     String p = path + (path.indexOf('?') >= 0 ? "&" : "?") + "device_id=" + dev;
@@ -1194,6 +1237,7 @@ void runCmd(const Cmd& c) {
       break;
     }
     case C_SEEK: playerCall("PUT", "/me/player/seek?position_ms=" + String(c.a)); break;
+    case C_PLAY_HERE: playHere(); break;
     case C_LIKE: {
       String u = urlEnc(c.s);
       int code = api(c.a ? "PUT" : "DELETE", "/me/library?uris=" + u);
@@ -1425,6 +1469,15 @@ void webTask(void*) {
         MDNS.begin(DEVICE_HOSTNAME);
         MDNS.addService("http", "tcp", 80);
         started = true;
+#if DESK_SPEAKER
+        if (codecOk) {
+          desk_speaker::Config sc;
+          sc.name = DESK_SPEAKER_NAME;
+          sc.clientId = SPOTIFY_CLIENT_ID;
+          sc.clientSecret = SPOTIFY_CLIENT_SECRET;
+          desk_speaker::start(sc);
+        }
+#endif
         Serial.printf("[web] setup page at http://%s or http://%s.local\n", WiFi.localIP().toString().c_str(), DEVICE_HOSTNAME);
       }
       server.handleClient();
@@ -2883,6 +2936,19 @@ void drawSettings(int yo) {
   txt(armed ? "Tap again" : (loggedIn() ? "Log out" : "Not logged in"), 235, ly + 15, F_SMALL, armed ? RGB565(255, 255, 255) : C_RED, textdatum_t::middle_center, 130);
 }
 
+// Account screen row of the Desk Thing's own speaker.
+const int ACC_ROW_SPEAKER_Y = 90 + 2 * 21;
+bool speakerPlaying() {
+  return desk_speaker::active() || (snap.active && strcmp(snap.device, DESK_SPEAKER_NAME) == 0);
+}
+const char* speakerStatus(uint16_t* color) {
+  if (!codecOk) return "No audio chip found";
+  if (!desk_speaker::started()) return "Starting...";
+  if (speakerPlaying()) { *color = C_GREEN; return "Playing here"; }
+  if (desk_speaker::connected()) { *color = C_GREEN; return "Ready - tap to play here"; }
+  return "Pick \"" DESK_SPEAKER_NAME "\" in Spotify once";
+}
+
 void drawAccount(int yo) {
   spr.fillRect(0, yo, 320, 240, C_BG);
   for (int y = 0; y < 76; y += 3) spr.fillRect(0, yo + y, 320, 3, mix(C_DKGREEN, C_BG, y / 76.0f));
@@ -2917,12 +2983,18 @@ void drawAccount(int yo) {
   };
   row("Spotify", status, code == 200 || code == 204 ? C_GREEN : C_TEXT);
   row("Playing on", snap.active && snap.device[0] ? snap.device : "Nothing playing", C_TEXT);
+#if DESK_SPEAKER
+  {
+    uint16_t c = C_TEXT;
+    row("Speaker", speakerStatus(&c), c);
+  }
+#endif
   snprintf(line, sizeof(line), "%d", (int)plCount);
   row("Playlists", line, C_TEXT);
   String ss = WiFi.SSID();
   row("Wi-Fi", up ? ss.c_str() : "Not connected", C_TEXT);
   row("Address", up ? WiFi.localIP().toString().c_str() : "-", C_TEXT);
-  txt("Swipe down to close", 160, yo + 229, F_TINY, C_DIM, textdatum_t::middle_center);
+  txt(DESK_SPEAKER ? "Tap Speaker to play here. Swipe down to close" : "Swipe down to close", 160, yo + 229, F_TINY, C_DIM, textdatum_t::middle_center);
 }
 
 
@@ -2935,6 +3007,7 @@ uint32_t overlayKey() {
   } else {
     k = hk(hk(hk(hk(k, avatarReady), lastPlayerCode), lastGoodPoll ? (millis() - lastGoodPoll) / 1000 : 0), plCount);
     k = hs(hs(hs(k, myName), snap.active ? snap.device : ""), likePlName);
+    k = hk(hk(hk(hk(k, codecOk), desk_speaker::started()), desk_speaker::connected()), speakerPlaying());
   }
   return k;
 }
@@ -2961,6 +3034,17 @@ void drawOverlay() {
 
 void onOverlayTap(int x, int y) {
   if (ovPos < 0.9f) return;
+#if DESK_SPEAKER
+  if (overlay == OV_ACCOUNT) {
+    if (y >= ACC_ROW_SPEAKER_Y - 5 && y < ACC_ROW_SPEAKER_Y + 17 && x >= 10 && x < 310) {
+      if (!codecOk || !loggedIn()) return;
+      if (speakerPlaying()) { setToast("Already playing here"); return; }
+      sendCmd(C_PLAY_HERE);
+      setToast("Moving playback here...");
+    }
+    return;
+  }
+#endif
   if (overlay != OV_SETTINGS) return;
   if (y >= SET_ROW_BRIGHT - 2 && y < SET_ROW_BRIGHT + 26) return;
   if (y >= SET_ROW_THEME - 4 && y < SET_ROW_THEME + SET_H + 2 && x >= SET_THEME_X) {
@@ -3540,6 +3624,19 @@ void setup() {
 
   loadFonts();
   lcd.init();
+#if DESK_SPEAKER
+  // The ES8311 audio codec shares the touch controller's I2C bus (port 0,
+  // SDA IO16, SCL IO15), which lcd.init() has just set up.
+  auto codecWrite = [](uint8_t reg, uint8_t val) {
+    return lgfx::i2c::writeRegister8(0, CODEC_I2C_ADDR, reg, val, 0, 100000).has_value();
+  };
+  if (!codecWrite(0x45, 0x00)) {
+    lgfx::i2c::init(0, 16, 15);
+    delay(5);
+  }
+  codecOk = desk_speaker::initCodec(codecWrite, AMP_ENABLE_PIN, true);
+  Serial.printf("[spk] audio codec %s\n", codecOk ? "ready" : "not found - speaker off");
+#endif
   lcd.setRotation(SCREEN_ROTATION);
   lcd.setBrightness(brightness);
   lcd.fillScreen(C_BG);

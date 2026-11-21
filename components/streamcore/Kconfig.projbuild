@@ -1,0 +1,14 @@
+# Spotify Desk Thing: Spotify Connect speaker options (StreamCore32 components)
+menu "Spotify Desk Thing speaker"
+
+    config SC32_DEVICE_NAME
+        string "Default speaker name in Spotify"
+        default "Desk Thing"
+
+    menu "Spotify Connect"
+        orsource "../sc_spotify/Kconfig.sc32"
+    endmenu
+
+    orsource "../bell/Kconfig.sc32"
+
+endmenu

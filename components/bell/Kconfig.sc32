@@ -1,0 +1,37 @@
+menu "Audio output (ES8311 speaker)"
+
+    config DESK_I2S_MCLK
+        int "I2S MCLK GPIO"
+        range 0 48
+        default 4
+    config DESK_I2S_BCLK
+        int "I2S BCLK GPIO"
+        range 0 48
+        default 5
+    config DESK_I2S_LRCK
+        int "I2S LRCK (WS) GPIO"
+        range 0 48
+        default 7
+    config DESK_I2S_DOUT
+        int "I2S data out (to the ES8311) GPIO"
+        range 0 48
+        default 8
+
+    config STREAM_BUFFER_SIZE
+        int "Audio buffer per stream (bytes)"
+        range 16384 524288
+        default 81920
+        help
+            Ring buffer between the Spotify player and the decoder (PSRAM).
+            A multiple of 1024 is recommended.
+
+    # the sink decodes Ogg Vorbis itself (Tremor), so the player passes the
+    # encoded stream through like it does for the VS1053
+    config AUDIO_SINK_ES8311
+        bool
+        default y
+    config BELL_NOCODEC
+        bool
+        default y
+
+endmenu
