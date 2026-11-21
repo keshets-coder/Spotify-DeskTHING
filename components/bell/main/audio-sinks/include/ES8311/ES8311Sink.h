@@ -1,4 +1,5 @@
 #pragma once
+#include <vector>
 // Audio sink for the ES8311 codec + FM8002E amplifier on the LCDWIKI ES3C28P
 // board (Spotify Desk Thing).
 //
@@ -139,6 +140,8 @@ class ES8311Sink {
 
   // used by the decoder callbacks
   size_t readEncoded(void* ptr, size_t len);
+  size_t readRaw(void* ptr, size_t len);
+  bool skipToVorbis();
 
  private:
   void runCommands(size_t streamId);
@@ -153,6 +156,9 @@ class ES8311Sink {
   uint8_t curvol_ = 100;
   std::shared_ptr<Stream> current_;
   size_t consumed_ = 0;
+  // the first Vorbis page, read ahead by skipToVorbis(), handed to Tremor first
+  std::vector<uint8_t> prefix_;
+  size_t prefixPos_ = 0;
   int16_t* out_ = nullptr;
   TaskHandle_t task_handle = nullptr;
 };

@@ -1,6 +1,7 @@
 #include "ES8311Sink.h"
 
 #include <cmath>
+#include <cstring>
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -247,6 +248,61 @@ void ES8311Sink::writePcm(int16_t* in, size_t frames, int channels) {
 // Called by Tremor: block until encoded data arrives, the stream is cancelled
 // (returns 0 = end of file) or, after a soft stop, everything is played.
 size_t ES8311Sink::readEncoded(void* ptr, size_t len) {
+  if (prefixPos_ < prefix_.size()) {
+    size_t n = std::min(len, prefix_.size() - prefixPos_);
+    memcpy(ptr, prefix_.data() + prefixPos_, n);
+    prefixPos_ += n;
+    return n;
+  }
+  return readRaw(ptr, len);
+}
+
+// Read exactly len bytes (false if the stream ends first).
+static bool readFull(ES8311Sink* sink, uint8_t* p, size_t len) {
+  while (len) {
+    size_t n = sink->readRaw(p, len);
+    if (!n)
+      return false;
+    p += n;
+    len -= n;
+  }
+  return true;
+}
+
+// Spotify's files start with their own Ogg page (167 bytes of metadata)
+// before the Vorbis headers. Tremor gives up on it (OV_ENOTVORBIS), so skip
+// pages until the one holding the Vorbis identification header, and keep
+// that page for Tremor.
+bool ES8311Sink::skipToVorbis() {
+  prefix_.clear();
+  prefixPos_ = 0;
+  for (int page = 0; page < 4; page++) {
+    std::vector<uint8_t> buf(27);
+    if (!readFull(this, buf.data(), 27))
+      return false;
+    if (memcmp(buf.data(), "OggS", 4) != 0)
+      return false;
+    uint8_t segs = buf[26];
+    buf.resize(27 + segs);
+    if (!readFull(this, buf.data() + 27, segs))
+      return false;
+    size_t body = 0;
+    for (int i = 0; i < segs; i++)
+      body += buf[27 + i];
+    size_t head = buf.size();
+    buf.resize(head + body);
+    if (!readFull(this, buf.data() + head, body))
+      return false;
+    if (body >= 7 && memcmp(buf.data() + head, "\x01vorbis", 7) == 0) {
+      prefix_ = std::move(buf);
+      return true;
+    }
+    ESP_LOGI(TAG, "skipped a %u-byte non-Vorbis Ogg page", (unsigned)buf.size());
+  }
+  return false;
+}
+
+size_t ES8311Sink::readRaw(void* ptr, size_t len) {
   auto s = current_;
   if (!s || s->dataBuffer == nullptr)
     return 0;
@@ -273,7 +329,8 @@ void ES8311Sink::decodeStream(std::shared_ptr<Stream> s) {
   memset(&vf, 0, sizeof(vf));
   // Tremor calls seek and tell unconditionally: the stream isn't seekable.
   ov_callbacks cb = {ovReadCb, ovSeekCb, nullptr, ovTellCb};
-  int r = ov_open_callbacks(this, &vf, nullptr, 0, cb);
+  int r = skipToVorbis() ? ov_open_callbacks(this, &vf, nullptr, 0, cb)
+                         : OV_ENOTVORBIS;
   if (r < 0) {
     if (!isCancelled(s->state))
       ESP_LOGE(TAG, "stream %u is not Ogg Vorbis (%d), skipping it",
