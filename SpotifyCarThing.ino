@@ -22,10 +22,15 @@
 #define DEVICE_HOSTNAME "carthing"
 #define TZ_INFO         "NZST-12NZDT,M9.5.0,M4.1.0/3"
 
-#define ENC_A 14
-#define ENC_B 21
+// Encoder on the board's 4-pin UART socket (UART0 is free because logs go over USB).
+#define ENC_A 43  // CLK, UART0 TX pin
+#define ENC_B 44  // DT,  UART0 RX pin
 #define ENC_STEPS_PER_DETENT 4
 #define ENC_REVERSE false
+
+#if !ARDUINO_USB_CDC_ON_BOOT
+#error "Set Tools > USB CDC On Boot to Enabled. The encoder uses the UART0 pins (IO43/IO44)."
+#endif
 
 #define SCREEN_ROTATION 1
 #define TOUCH_ROTATION  2
