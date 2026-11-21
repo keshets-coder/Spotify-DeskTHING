@@ -177,12 +177,18 @@ void TrackPlayer::runTask() {
     SC32_LOG(info, "Playing track %s, %s, %s", track->ref.uri, track->trackInfo.name.c_str(),
              track->trackInfo.artist.c_str());
     reconnectTrack = false;
-    uint8_t retries = 10;
+    // Key and CDN lookups often take longer than a second (key retries,
+    // storage-resolve, CDN open): wait up to 15 s, stop early on a reset.
+    uint16_t retries = 150;
     while (track->state != QueuedTrack::State::READY &&
-           track->state != QueuedTrack::State::FAILED && retries-- > 0) {
+           track->state != QueuedTrack::State::FAILED && !pendingReset &&
+           retries-- > 0) {
       BELL_SLEEP_MS(100);
-      SC32_LOG(error, "Track in state %i", (int)track->state);
+      if (retries % 10 == 0)
+        SC32_LOG(info, "Waiting for track, state %i", (int)track->state);
     }
+    if (pendingReset)
+      continue;
     if (track->state != QueuedTrack::State::READY) {
       SC32_LOG(error, "Track failed to load, skipping %s", track->ref.uri);
       //if (track->ref.removed != NULL) // tracks that should not be played(for example delimiters)
