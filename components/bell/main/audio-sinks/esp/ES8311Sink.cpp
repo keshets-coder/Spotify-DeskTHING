@@ -22,6 +22,10 @@ static int ovSeekCb(void*, ogg_int64_t, int) {
 static long ovTellCb(void*) {
   return 0;
 }
+// ov_clear() calls close_func unconditionally too; the sink owns the stream.
+static int ovCloseCb(void*) {
+  return 0;
+}
 
 static size_t ovReadCb(void* ptr, size_t size, size_t nmemb, void* ds) {
   return static_cast<ES8311Sink*>(ds)->readEncoded(ptr, size * nmemb);
@@ -327,8 +331,8 @@ void ES8311Sink::decodeStream(std::shared_ptr<Stream> s) {
 
   OggVorbis_File vf;
   memset(&vf, 0, sizeof(vf));
-  // Tremor calls seek and tell unconditionally: the stream isn't seekable.
-  ov_callbacks cb = {ovReadCb, ovSeekCb, nullptr, ovTellCb};
+  // Tremor calls seek, tell and close unconditionally: the stream isn't seekable.
+  ov_callbacks cb = {ovReadCb, ovSeekCb, ovCloseCb, ovTellCb};
   int r = skipToVorbis() ? ov_open_callbacks(this, &vf, nullptr, 0, cb)
                          : OV_ENOTVORBIS;
   if (r < 0) {
