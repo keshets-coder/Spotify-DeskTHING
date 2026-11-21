@@ -128,9 +128,14 @@ ssize_t bell::TLSSocket::read(uint8_t* buf, size_t len) {
   int ret = mbedtls_ssl_read(&ssl, buf, len);
 
   if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
+    BELL_LOG(info, "http_tls", "peer sent close_notify");
     close();
     return 0;
   }
+#ifdef MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET
+  if (ret == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET)
+    return 0;  // TLS 1.3 ticket, not data: read again
+#endif
   if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
     return 0;  // <- was -EAGAIN: treat as "no data yet"
   if (ret == 0) {
@@ -138,6 +143,7 @@ ssize_t bell::TLSSocket::read(uint8_t* buf, size_t len) {
     return 0;
   }  // orderly close from peer
   if (ret < 0) {
+    BELL_LOG(error, "http_tls", "read error -0x%04x", (unsigned)-ret);
     close();
     return -1;
   }  // real error

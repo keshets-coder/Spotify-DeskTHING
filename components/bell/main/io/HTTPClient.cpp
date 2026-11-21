@@ -477,6 +477,7 @@ bool HTTPClient::Response::readResponseHeaders() {
 
   const int MAX_WAIT_MS = 5000;
   int waited_ms = 0;
+  const uint64_t startMs = nowMs();
 
   while (true) {
     if (httpBufferAvailable == httpBuffer.size()) {
@@ -564,7 +565,15 @@ bool HTTPClient::Response::readResponseHeaders() {
         waited_ms = 0;
       }
     } else if (n == 0) {
-      BELL_LOG(error, "httpClient", "Peer closed before headers (will retry)");
+      // Desk Thing: a TLS read that timed out or needs another record
+      // (WANT_READ) also returns 0 but leaves the socket open: keep waiting
+      // instead of dropping a request the server is still answering.
+      if (socketStream.isOpen() && nowMs() - startMs < 10000) {
+        BELL_SLEEP_MS(10);
+        continue;
+      }
+      BELL_LOG(error, "httpClient", "Peer closed before headers from %s after %u ms (will retry)",
+               urlParser.host.c_str(), (unsigned)(nowMs() - startMs));
       return false;
     } else {
       BELL_LOG(error, "httpClient", "Socket/TLS read error (will retry)");
