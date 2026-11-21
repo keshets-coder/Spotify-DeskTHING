@@ -11,6 +11,7 @@
 #include <time.h>
 #include <functional>
 #include "InterFonts.h"
+#include "DeskSpeaker.h"
 
 
 // ===================== YOUR SETTINGS =====================
@@ -20,18 +21,31 @@
 
 #define REDIRECT_URI    "http://127.0.0.1:8888/callback"
 #define DEVICE_HOSTNAME "carthing"
-#define TZ_INFO         "NZST-12NZDT,M9.5.0,M4.1.0/3"
+#define TZ_INFO         "IST-2IDT,M3.4.4/26,M10.5.0"  // Israel. New Zealand: "NZST-12NZDT,M9.5.0,M4.1.0/3"
 
-#define ENC_A 14
-#define ENC_B 21
+// Encoder on the board's 4-pin UART socket (UART0 is free because logs go over USB).
+#define ENC_A 43  // CLK, UART0 TX pin
+#define ENC_B 44  // DT,  UART0 RX pin
 #define ENC_STEPS_PER_DETENT 4
 #define ENC_REVERSE false
+
+#if !ARDUINO_USB_CDC_ON_BOOT
+#error "ARDUINO_USB_CDC_ON_BOOT must be 1. The encoder uses the UART0 pins (IO43/IO44)."
+#endif
+
+// Spotify Connect speaker: the Desk Thing shows up in Spotify as a speaker and
+// plays through the speaker plugged into the board's 2-pin SPEAKER socket.
+// Set DESK_SPEAKER to false to use it only as a remote, like before.
+#define DESK_SPEAKER      true
+#define DESK_SPEAKER_NAME "Desk Thing"
+#define AMP_ENABLE_PIN    1   // FM8002E amplifier shutdown pin, low = on
+#define CODEC_I2C_ADDR    0x18
 
 #define SCREEN_ROTATION 1
 #define TOUCH_ROTATION  2
 
 #define EDGE_PX 26
-#define SPI_WRITE_MHZ 80
+#define SPI_WRITE_MHZ 40
 
 char wifiSsid[33] = "";
 char wifiPass[65] = "";
@@ -73,7 +87,7 @@ struct TR {
   uint32_t dur;
 };
 
-enum CmdType : uint8_t { C_TOGGLE, C_NEXT, C_PREV, C_SHUFFLE, C_REPEAT, C_SEEK, C_LIKE, C_OPEN_LIST, C_MORE, C_PLAY_AT, C_RELOAD_PL };
+enum CmdType : uint8_t { C_TOGGLE, C_NEXT, C_PREV, C_SHUFFLE, C_REPEAT, C_SEEK, C_LIKE, C_OPEN_LIST, C_MORE, C_PLAY_AT, C_RELOAD_PL, C_PLAY_HERE };
 struct Cmd { uint8_t type; int32_t a; int32_t b; char s[64]; };
 
 enum Screen : uint8_t { SCR_BOOT, SCR_SETUP, SCR_IDLE, SCR_LIBRARY, SCR_LIST, SCR_NOW, SCR_WIFI, SCR_WIFIPASS };
@@ -371,8 +385,14 @@ void copyFold(char* dst, size_t cap, const char* src) {
     else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; n = 2; }
     else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; n = 3; }
     else { p++; continue; }
+    const uint8_t* start = p;
     p++;
     for (int i = 0; i < n && *p; i++, p++) cp = (cp << 6) | (*p & 0x3F);
+    // Hebrew letters are in the fonts: keep them (vowel points are dropped).
+    if ((cp >= 0x05D0 && cp <= 0x05EA) || cp == 0x05BE || cp == 0x05F3 || cp == 0x05F4) {
+      if (o + 2 < cap) { dst[o++] = start[0]; dst[o++] = start[1]; }
+      continue;
+    }
     const char* r = foldCp(cp);
     while (*r && o + 1 < cap) dst[o++] = *r++;
   }
@@ -516,6 +536,9 @@ void logout() {
   trCount = 0;
   shared = Player();
   UNLOCK();
+#if DESK_SPEAKER
+  desk_speaker::forgetLogin();
+#endif
   Serial.println("[auth] logged out");
 }
 
@@ -588,6 +611,45 @@ bool exchangeCode(const String& code) {
 
 // ---------------------------------------------------------------- api
 
+// Reads a reply body of known length ourselves. HTTPClient::getString()
+// throws the whole body away when the TLS read stalls part-way through a big
+// reply (70+ KB), so read patiently and keep going while data arrives.
+String readBody(HTTPClient& h, int size) {
+  String out;
+  if (!out.reserve(size)) {
+    Serial.printf("[api] no memory for a %d byte reply\n", size);
+    return out;
+  }
+  NetworkClient* s = h.getStreamPtr();
+  if (!s) return out;
+  static char buf[2048];
+  int got = 0;
+  uint32_t t0 = millis(), last = t0;
+  while (got < size) {
+    int av = s->available();
+    if (av > 0) {
+      int n = s->read((uint8_t*)buf, min(av, min((int)sizeof(buf), size - got)));
+      if (n > 0) {
+        out.concat(buf, n);
+        got += n;
+        last = millis();
+        continue;
+      }
+    }
+    if (!s->connected() && s->available() <= 0) break;
+    if (millis() - last > 8000) break;
+    delay(2);
+  }
+  if (got < size) {
+    Serial.printf("[api] reply cut short: %d of %d bytes in %lums (%s)\n", got, size, (unsigned long)(millis() - t0),
+                  s->connected() ? "stalled" : "closed");
+    s->stop();
+    return String();
+  }
+  if (millis() - t0 > 1500) Serial.printf("[api] %d byte reply took %lums\n", size, (unsigned long)(millis() - t0));
+  return out;
+}
+
 int api(const char* method, const String& path, const String& body = "", String* out = nullptr) {
   if ((int32_t)(rateLimitedUntil - millis()) > 0) return 429;
   if (!ensureToken()) return -1;
@@ -606,7 +668,12 @@ int api(const char* method, const String& path, const String& body = "", String*
     bool isGet = strcmp(method, "GET") == 0;
     int size = code > 0 ? apiHttp.getSize() : 0;
     bool noBody = code == 204 || code == 304 || ((code == 202 || !isGet) && size <= 0);
-    if (code > 0 && !noBody) resp = apiHttp.getString();
+    if (code > 0 && !noBody) {
+      resp = size > 0 ? readBody(apiHttp, size) : apiHttp.getString();
+      if (resp.length() == 0 && size != 0)
+        Serial.printf("[api] %s %s: reply body lost (size %d, free psram %u, internal %u)\n", method, path.c_str(), size,
+                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    }
     if (!isGet) Serial.printf("[api] %s %s -> %d (%lums)\n", method, path.c_str(), code, (unsigned long)(millis() - t0));
     String retry = apiHttp.header("Retry-After");
     apiHttp.end();
@@ -687,19 +754,44 @@ String pickImage(JsonArray imgs, int want) {
   return String(best);
 }
 
-String findDevice() {
+void dropHolds();
+void drawScreensaver();
+bool codecOk = false;
+
+// The device to send playback to when nothing is active: the active device,
+// else this Desk Thing's own speaker, else the first one Spotify lists.
+// onlySpeaker: return the Desk Thing's speaker or nothing.
+String findDevice(bool onlySpeaker = false) {
   String body;
   if (api("GET", "/me/player/devices", "", &body) != 200) return "";
   JsonDocument doc(&spiAlloc);
   if (deserializeJson(doc, body)) return "";
-  String first;
+  String first, speaker;
   for (JsonObject d : doc["devices"].as<JsonArray>()) {
     const char* id = d["id"] | "";
     if (!id[0] || (d["is_restricted"] | false)) continue;
+    if (DESK_SPEAKER && strcmp(d["name"] | "", DESK_SPEAKER_NAME) == 0) speaker = id;
+    if (onlySpeaker) continue;
     if (d["is_active"] | false) return String(id);
     if (!first.length()) first = id;
   }
+  if (onlySpeaker || speaker.length()) return speaker;
   return first;
+}
+
+// Move playback to the Desk Thing's speaker (and start playing).
+void playHere() {
+  String dev = findDevice(true);
+  if (!dev.length()) {
+    setToast(desk_speaker::connected() ? "Spotify hasn't listed the speaker yet, try again"
+                                       : "Pick \"" DESK_SPEAKER_NAME "\" once in the Spotify app");
+    return;
+  }
+  int code = api("PUT", "/me/player", "{\"device_ids\":[\"" + dev + "\"],\"play\":true}");
+  if (code == 403) setToast("Spotify Premium is needed for playback control");
+  else if (code < 200 || code >= 300) setToast("Couldn't move playback here");
+  else setToast("Playing on the Desk Thing");
+  dropHolds();
 }
 
 void dropHolds() {
@@ -715,7 +807,8 @@ int playerCall(const char* method, const String& path, const String& body = "") 
   if (code == 404) {
     String dev = findDevice();
     if (!dev.length()) {
-      setToast("No Spotify device found. Open Spotify on your phone or PC.");
+      setToast(DESK_SPEAKER ? "No Spotify device yet. Pick \"" DESK_SPEAKER_NAME "\" once in the Spotify app."
+                           : "No Spotify device found. Open Spotify on your phone or PC.");
       return 404;
     }
     String p = path + (path.indexOf('?') >= 0 ? "&" : "?") + "device_id=" + dev;
@@ -809,8 +902,10 @@ void loadPlaylists() {
 void loadTracks(const char* id, int offset, uint16_t gen) {
   bool liked = strcmp(id, "liked") == 0;
   bool album = strncmp(id, "album:", 6) == 0;
-  String path = liked ? "/me/tracks?limit=50&offset=" + String(offset)
-              : album ? "/albums/" + String(id + 6) + "/tracks?limit=50&offset=" + String(offset)
+  // market=from_token drops the long available_markets lists, which made
+  // the liked-songs reply too big to read on the board
+  String path = liked ? "/me/tracks?limit=50&market=from_token&offset=" + String(offset)
+              : album ? "/albums/" + String(id + 6) + "/tracks?limit=50&market=from_token&offset=" + String(offset)
                       : "/playlists/" + String(id) + "/items?limit=50&offset=" + String(offset) + "&additional_types=track,episode";
   bool plain = liked || album;
   String slim = path + "&fields=" + urlEnc("total,items(item(uri,name,duration_ms,type,artists(name),show(name)))");
@@ -1040,7 +1135,7 @@ void loadRecent() {
   needRecent = false;
   recentState = RS_LOADING;
   String body;
-  int code = api("GET", "/me/player/recently-played?limit=50", "", &body);
+  int code = api("GET", "/me/player/recently-played?limit=30", "", &body);
   Serial.printf("[recent] -> %d\n", code);
   if (code == 401 || code == 403) { recentState = RS_SCOPE; recentAt = millis(); return; }
   if (code != 200) { recentState = RS_ERROR; recentAt = millis(); return; }
@@ -1055,7 +1150,7 @@ void loadRecent() {
   al["images"][0]["width"] = true;
   al["artists"][0]["name"] = true;
   JsonDocument doc(&spiAlloc);
-  if (deserializeJson(doc, body, DeserializationOption::Filter(filter))) { recentState = RS_ERROR; return; }
+  if (deserializeJson(doc, body, DeserializationOption::Filter(filter))) { recentState = RS_ERROR; recentAt = millis(); return; }
   RecentItem got[6];
   int n = 0;
   for (JsonObject it : doc["items"].as<JsonArray>()) {
@@ -1172,6 +1267,15 @@ void sendVolumeIfDue() {
   LOCK();
   holdVolUntil = now + 2500;
   UNLOCK();
+#if DESK_SPEAKER
+  // Playing here: report the volume over the speaker's own Spotify
+  // connection instead of a Web API round trip.
+  if (desk_speaker::active()) {
+    desk_speaker::setVolumeAndReport(v);
+    Serial.printf("[vol] speaker set %d\n", v);
+    return;
+  }
+#endif
   int code = api("PUT", "/me/player/volume?volume_percent=" + String(v));
   Serial.printf("[vol] set %d -> %d\n", v, code);
   if (code == 404) setToast("Nothing is playing right now");
@@ -1194,6 +1298,7 @@ void runCmd(const Cmd& c) {
       break;
     }
     case C_SEEK: playerCall("PUT", "/me/player/seek?position_ms=" + String(c.a)); break;
+    case C_PLAY_HERE: playHere(); break;
     case C_LIKE: {
       String u = urlEnc(c.s);
       int code = api(c.a ? "PUT" : "DELETE", "/me/library?uris=" + u);
@@ -1425,6 +1530,15 @@ void webTask(void*) {
         MDNS.begin(DEVICE_HOSTNAME);
         MDNS.addService("http", "tcp", 80);
         started = true;
+#if DESK_SPEAKER
+        if (codecOk) {
+          desk_speaker::Config sc;
+          sc.name = DESK_SPEAKER_NAME;
+          sc.clientId = SPOTIFY_CLIENT_ID;
+          sc.clientSecret = SPOTIFY_CLIENT_SECRET;
+          desk_speaker::start(sc);
+        }
+#endif
         Serial.printf("[web] setup page at http://%s or http://%s.local\n", WiFi.localIP().toString().c_str(), DEVICE_HOSTNAME);
       }
       server.handleClient();
@@ -1482,17 +1596,129 @@ void fitText(char* out, size_t cap, const char* s, int maxW) {
   }
 }
 
+// ---- right-to-left text (Hebrew)
+// The fonts draw left to right, so text with Hebrew is put into visual order
+// first: a small version of the Unicode bidi algorithm (strong letters,
+// numbers kept left to right, neutrals take their neighbours' direction,
+// mirrored brackets).
+
+static bool isRtlCp(uint32_t c) { return (c >= 0x0590 && c <= 0x05FF) || (c >= 0xFB1D && c <= 0xFB4F); }
+static bool isDigitCp(uint32_t c) { return c >= '0' && c <= '9'; }
+static bool isLtrCp(uint32_t c) {
+  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= 0xC0 && c < 0x2000 && !isRtlCp(c) && c != 0xD7 && c != 0xF7);
+}
+
+static size_t utf8Decode(const char* s, uint32_t* out, size_t cap) {
+  size_t n = 0;
+  const uint8_t* p = (const uint8_t*)s;
+  while (*p && n < cap) {
+    uint32_t c = *p++;
+    int more = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+    if (more) c &= 0x3F >> more;
+    while (more-- && (*p & 0xC0) == 0x80) c = (c << 6) | (*p++ & 0x3F);
+    out[n++] = c;
+  }
+  return n;
+}
+
+static void utf8Encode(const uint32_t* cp, size_t n, char* out, size_t cap) {
+  size_t o = 0;
+  for (size_t i = 0; i < n; i++) {
+    uint32_t c = cp[i];
+    char b[4];
+    int k;
+    if (c < 0x80) { b[0] = c; k = 1; }
+    else if (c < 0x800) { b[0] = 0xC0 | (c >> 6); b[1] = 0x80 | (c & 0x3F); k = 2; }
+    else if (c < 0x10000) { b[0] = 0xE0 | (c >> 12); b[1] = 0x80 | ((c >> 6) & 0x3F); b[2] = 0x80 | (c & 0x3F); k = 3; }
+    else { b[0] = 0xF0 | (c >> 18); b[1] = 0x80 | ((c >> 12) & 0x3F); b[2] = 0x80 | ((c >> 6) & 0x3F); b[3] = 0x80 | (c & 0x3F); k = 4; }
+    if (o + k >= cap) break;
+    memcpy(out + o, b, k);
+    o += k;
+  }
+  out[o] = 0;
+}
+
+static uint32_t mirrorCp(uint32_t c) {
+  switch (c) {
+    case '(': return ')'; case ')': return '(';
+    case '[': return ']'; case ']': return '[';
+    case '{': return '}'; case '}': return '{';
+    case '<': return '>'; case '>': return '<';
+  }
+  return c;
+}
+
+// Returns true and fills out when s has Hebrew and needed reordering.
+bool bidiVisual(const char* s, char* out, size_t cap) {
+  const uint8_t* q = (const uint8_t*)s;
+  bool any = false;
+  for (; *q; q++) if (*q == 0xD6 || *q == 0xD7 || *q == 0xEF) { any = true; break; }
+  if (!any) return false;
+  static uint32_t cp[160];
+  static uint8_t lvl[160];
+  size_t n = utf8Decode(s, cp, 160);
+  // 0 = neutral, 1 = left-to-right, 2 = right-to-left, 3 = number
+  static uint8_t ty[160];
+  bool hasRtl = false;
+  int base = -1;
+  for (size_t i = 0; i < n; i++) {
+    uint32_t c = cp[i];
+    ty[i] = isRtlCp(c) ? 2 : isDigitCp(c) ? 3 : isLtrCp(c) ? 1 : 0;
+    if (ty[i] == 2) hasRtl = true;
+    if (base < 0 && (ty[i] == 1 || ty[i] == 2)) base = ty[i] == 2 ? 1 : 0;
+  }
+  if (!hasRtl) return false;
+  if (base < 0) base = 1;
+  // Numbers glued to a number by . , : - / stay one number.
+  for (size_t i = 1; i + 1 < n; i++)
+    if (ty[i] == 0 && ty[i - 1] == 3 && ty[i + 1] == 3 && strchr(".,:-/", (int)cp[i])) ty[i] = 3;
+  // Neutrals between two runs of the same direction take it, else the base.
+  for (size_t i = 0; i < n; i++) {
+    if (ty[i] != 0) continue;
+    size_t j = i;
+    while (j < n && ty[j] == 0) j++;
+    int before = i == 0 ? (base ? 2 : 1) : (ty[i - 1] == 2 ? 2 : 1);
+    int after = j >= n ? (base ? 2 : 1) : (ty[j] == 2 ? 2 : 1);
+    int d = before == after ? before : (base ? 2 : 1);
+    for (size_t k = i; k < j; k++) ty[k] = d == 2 ? 4 : 5;  // 4 = neutral as RTL, 5 = as LTR
+    i = j - 1;
+  }
+  uint8_t maxL = 0;
+  for (size_t i = 0; i < n; i++) {
+    bool rtl = ty[i] == 2 || ty[i] == 4;
+    if (base) lvl[i] = rtl ? 1 : 2;
+    else lvl[i] = rtl ? 1 : (ty[i] == 3 && i && lvl[i - 1] == 1 ? 2 : 0);
+    if (lvl[i] > maxL) maxL = lvl[i];
+    if (lvl[i] & 1) cp[i] = mirrorCp(cp[i]);
+  }
+  for (int L = maxL; L >= 1; L--) {
+    for (size_t i = 0; i < n;) {
+      if (lvl[i] < L) { i++; continue; }
+      size_t j = i;
+      while (j < n && lvl[j] >= L) j++;
+      for (size_t a = i, b = j - 1; a < b; a++, b--) {
+        std::swap(cp[a], cp[b]);
+        std::swap(lvl[a], lvl[b]);
+      }
+      i = j;
+    }
+  }
+  utf8Encode(cp, n, out, cap);
+  return true;
+}
+
 void txt(const char* s, int x, int y, const lgfx::IFont* f, uint16_t c, textdatum_t d = textdatum_t::top_left, int maxW = 0) {
   spr.setFont(f);
   spr.setTextColor(c);
   spr.setTextDatum(d);
+  char buf[160];
   if (maxW > 0 && spr.textWidth(s) > maxW) {
-    char buf[160];
     fitText(buf, sizeof(buf), s, maxW);
-    spr.drawString(buf, x, y);
-  } else {
-    spr.drawString(s, x, y);
+    s = buf;
   }
+  char vis[480];
+  if (bidiVisual(s, vis, sizeof(vis))) s = vis;
+  spr.drawString(s, x, y);
 }
 
 int textW(const char* s, const lgfx::IFont* f) {
@@ -1508,6 +1734,15 @@ float advOf(const lgfx::IFont* f, char ch) {
 }
 
 void capsTxt(const char* s, int x, int y, const lgfx::IFont* f, uint16_t col, float gap, int maxW) {
+  // Letter-spaced capitals only work for plain ASCII; draw anything else
+  // (Hebrew names, accents) as normal text.
+  for (const uint8_t* p = (const uint8_t*)s; *p; p++) {
+    if (*p >= 0x80) {
+      auto v = (const lgfx::VLWfont*)f;
+      txt(s, x, y + (v->maxAscent - v->maxDescent) / 2, f, col, textdatum_t::baseline_left, maxW);
+      return;
+    }
+  }
   auto v = (const lgfx::VLWfont*)f;
   spr.setFont(f);
   spr.setTextColor(col);
@@ -2124,6 +2359,10 @@ void bumpVolume(int dir) {
   volTarget = nv;
   volChangedAt = now;
   volDirty = true;
+#if DESK_SPEAKER
+  // Playing here: change the speaker now, Spotify is told right after.
+  if (desk_speaker::active()) desk_speaker::setVolume(nv);
+#endif
   Serial.printf("[enc] %s -> vol %d (step %d)\n", dir > 0 ? "up" : "down", nv, step);
 }
 
@@ -2883,6 +3122,19 @@ void drawSettings(int yo) {
   txt(armed ? "Tap again" : (loggedIn() ? "Log out" : "Not logged in"), 235, ly + 15, F_SMALL, armed ? RGB565(255, 255, 255) : C_RED, textdatum_t::middle_center, 130);
 }
 
+// Account screen row of the Desk Thing's own speaker.
+const int ACC_ROW_SPEAKER_Y = 90 + 2 * 21;
+bool speakerPlaying() {
+  return desk_speaker::active() || (snap.active && strcmp(snap.device, DESK_SPEAKER_NAME) == 0);
+}
+const char* speakerStatus(uint16_t* color) {
+  if (!codecOk) return "No audio chip found";
+  if (!desk_speaker::started()) return "Starting...";
+  if (speakerPlaying()) { *color = C_GREEN; return "Playing here"; }
+  if (desk_speaker::connected()) { *color = C_GREEN; return "Ready - tap to play here"; }
+  return "Pick \"" DESK_SPEAKER_NAME "\" in Spotify once";
+}
+
 void drawAccount(int yo) {
   spr.fillRect(0, yo, 320, 240, C_BG);
   for (int y = 0; y < 76; y += 3) spr.fillRect(0, yo + y, 320, 3, mix(C_DKGREEN, C_BG, y / 76.0f));
@@ -2917,12 +3169,18 @@ void drawAccount(int yo) {
   };
   row("Spotify", status, code == 200 || code == 204 ? C_GREEN : C_TEXT);
   row("Playing on", snap.active && snap.device[0] ? snap.device : "Nothing playing", C_TEXT);
+#if DESK_SPEAKER
+  {
+    uint16_t c = C_TEXT;
+    row("Speaker", speakerStatus(&c), c);
+  }
+#endif
   snprintf(line, sizeof(line), "%d", (int)plCount);
   row("Playlists", line, C_TEXT);
   String ss = WiFi.SSID();
   row("Wi-Fi", up ? ss.c_str() : "Not connected", C_TEXT);
   row("Address", up ? WiFi.localIP().toString().c_str() : "-", C_TEXT);
-  txt("Swipe down to close", 160, yo + 229, F_TINY, C_DIM, textdatum_t::middle_center);
+  txt(DESK_SPEAKER ? "Tap Speaker to play here. Swipe down to close" : "Swipe down to close", 160, yo + 229, F_TINY, C_DIM, textdatum_t::middle_center);
 }
 
 
@@ -2935,6 +3193,7 @@ uint32_t overlayKey() {
   } else {
     k = hk(hk(hk(hk(k, avatarReady), lastPlayerCode), lastGoodPoll ? (millis() - lastGoodPoll) / 1000 : 0), plCount);
     k = hs(hs(hs(k, myName), snap.active ? snap.device : ""), likePlName);
+    k = hk(hk(hk(hk(k, codecOk), desk_speaker::started()), desk_speaker::connected()), speakerPlaying());
   }
   return k;
 }
@@ -2961,6 +3220,17 @@ void drawOverlay() {
 
 void onOverlayTap(int x, int y) {
   if (ovPos < 0.9f) return;
+#if DESK_SPEAKER
+  if (overlay == OV_ACCOUNT) {
+    if (y >= ACC_ROW_SPEAKER_Y - 5 && y < ACC_ROW_SPEAKER_Y + 17 && x >= 10 && x < 310) {
+      if (!codecOk || !loggedIn()) return;
+      if (speakerPlaying()) { setToast("Already playing here"); return; }
+      sendCmd(C_PLAY_HERE);
+      setToast("Moving playback here...");
+    }
+    return;
+  }
+#endif
   if (overlay != OV_SETTINGS) return;
   if (y >= SET_ROW_BRIGHT - 2 && y < SET_ROW_BRIGHT + 26) return;
   if (y >= SET_ROW_THEME - 4 && y < SET_ROW_THEME + SET_H + 2 && x >= SET_THEME_X) {
@@ -3540,6 +3810,19 @@ void setup() {
 
   loadFonts();
   lcd.init();
+#if DESK_SPEAKER
+  // The ES8311 audio codec shares the touch controller's I2C bus (port 0,
+  // SDA IO16, SCL IO15), which lcd.init() has just set up.
+  auto codecWrite = [](uint8_t reg, uint8_t val) {
+    return lgfx::i2c::writeRegister8(0, CODEC_I2C_ADDR, reg, val, 0, 100000).has_value();
+  };
+  if (!codecWrite(0x45, 0x00)) {
+    lgfx::i2c::init(0, 16, 15);
+    delay(5);
+  }
+  codecOk = desk_speaker::initCodec(codecWrite, AMP_ENABLE_PIN, true);
+  Serial.printf("[spk] audio codec %s\n", codecOk ? "ready" : "not found - speaker off");
+#endif
   lcd.setRotation(SCREEN_ROTATION);
   lcd.setBrightness(brightness);
   lcd.fillScreen(C_BG);
@@ -3619,6 +3902,9 @@ void presentFrame() {
       }
       y++;
     }
+    // Push whole rows: a narrower window came out sheared on the ESP-IDF build.
+    x0 = 0;
+    x1 = 319;
     int h = last - top + 1, w = x1 - x0 + 1;
     lcd.setClipRect(x0, top, w, h);
     spr.pushSprite(&lcd, 0, 0);
